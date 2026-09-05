@@ -1,0 +1,59 @@
+{
+  "transactions": [
+    {
+      "transaction_id": "20260905-MILL-TR-99382",
+      "booking_date": "2026-09-05",
+      "value_date": "2026-09-05",
+      "amount": {
+        "value": "-2000.00",
+        "currency": "PLN"
+      },
+      "creditor_name": "JOHN DOE",
+      "creditor_account": {
+        "iban": "DE12345678901234567890"
+      },
+      "debtor_account": {
+        "iban": "PL987654321098765432109876"
+      },
+      "remittance_information_unstructured": "Trade Republic Deposit",
+      "status": "BOOKED"
+    },
+    {
+      "transaction_id": "20260903-MILL-REV-11223",
+      "booking_date": "2026-09-03",
+      "value_date": "2026-09-03",
+      "amount": {
+        "value": "-500.00",
+        "currency": "PLN"
+      },
+      "creditor_name": "JOHN DOE",
+      "creditor_account": {
+        "iban": "LT304580906123456789"
+      },
+      "debtor_account": {
+        "iban": "PL987654321098765432109876"
+      },
+      "remittance_information_unstructured": "Top up",
+      "status": "BOOKED"
+    },
+    {
+      "transaction_id": "20260827-MILL-SALARY-00417",
+      "booking_date": "2026-08-27",
+      "value_date": "2026-08-27",
+      "amount": {
+        "value": "15319.93",
+        "currency": "PLN"
+      },
+      "creditor_name": "JOHN DOE",
+      "creditor_account": {
+        "iban": "PL987654321098765432109876"
+      },
+      "debtor_account": {
+        "iban": "PL541140100000200301001002"
+      },
+      "remittance_information_unstructured": "Lista Plac 08/2026",
+      "status": "BOOKED"
+    }
+  ],
+  "continuation_key": null
+}
