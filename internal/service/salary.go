@@ -55,17 +55,19 @@ func (s *Service) RollPayPeriod(tx *sql.Tx, salaryDate time.Time, minGapDays int
 	}
 
 	if openPeriodCount > 0 {
+		closeDate := salaryDate.AddDate(0, 0, -1).Format("2006-01-02")
 		if _, err := tx.Exec(
 			"UPDATE pay_periods SET end_date = ? WHERE end_date IS NULL",
-			salaryDate.AddDate(0, 0, -1).Format("2006-01-02"),
+			closeDate,
 		); err != nil {
 			return false, fmt.Errorf("closing open period: %w", err)
 		}
 	}
 
+	startDate := salaryDate.Format("2006-01-02")
 	if _, err := tx.Exec(
 		"INSERT INTO pay_periods (start_date) VALUES (?)",
-		salaryDate.Format("2006-01-02"),
+		startDate,
 	); err != nil {
 		return false, fmt.Errorf("opening new period: %w", err)
 	}

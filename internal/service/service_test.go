@@ -2,8 +2,14 @@
 package service_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -11,6 +17,7 @@ import (
 
 	"github.com/calemroelofs/enron-accounting-department/internal/config"
 	"github.com/calemroelofs/enron-accounting-department/internal/db"
+	"github.com/calemroelofs/enron-accounting-department/internal/enablebanking"
 	"github.com/calemroelofs/enron-accounting-department/internal/service"
 )
 
@@ -571,36 +578,39 @@ func TestSyncFromFixture(t *testing.T) {
 	fixture := `{
 		"transactions": [
 			{
-				"transaction_id": "20260905-MILL-TR-99382",
+				"entry_reference": "20260905-MILL-TR-99382",
 				"booking_date": "2026-09-05",
 				"value_date": "2026-09-05",
-				"amount": {"value": "-2000.00", "currency": "PLN"},
-				"creditor_name": "JOHN DOE",
+				"transaction_amount": {"amount": "-2000.00", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
 				"creditor_account": {"iban": "DE12345678901234567890"},
 				"debtor_account": {"iban": "PL987654321098765432109876"},
-				"remittance_information_unstructured": "Trade Republic Deposit",
+				"remittance_information": ["Trade Republic Deposit"],
+				"credit_debit_indicator": "DBIT",
 				"status": "BOOKED"
 			},
 			{
-				"transaction_id": "20260903-MILL-REV-11223",
+				"entry_reference": "20260903-MILL-REV-11223",
 				"booking_date": "2026-09-03",
 				"value_date": "2026-09-03",
-				"amount": {"value": "-500.00", "currency": "PLN"},
-				"creditor_name": "JOHN DOE",
+				"transaction_amount": {"amount": "-500.00", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
 				"creditor_account": {"iban": "LT304580906123456789"},
 				"debtor_account": {"iban": "PL987654321098765432109876"},
-				"remittance_information_unstructured": "Top up",
+				"remittance_information": ["Top up"],
+				"credit_debit_indicator": "DBIT",
 				"status": "BOOKED"
 			},
 			{
-				"transaction_id": "20260827-MILL-SALARY-00417",
+				"entry_reference": "20260827-MILL-SALARY-00417",
 				"booking_date": "2026-08-27",
 				"value_date": "2026-08-27",
-				"amount": {"value": "15319.93", "currency": "PLN"},
-				"creditor_name": "JOHN DOE",
+				"transaction_amount": {"amount": "15319.93", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
 				"creditor_account": {"iban": "PL987654321098765432109876"},
 				"debtor_account": {"iban": "PL541140100000200301001002"},
-				"remittance_information_unstructured": "Lista Plac 08/2026",
+				"remittance_information": ["Lista Plac 08/2026"],
+				"credit_debit_indicator": "CRDT",
 				"status": "BOOKED"
 			}
 		],
@@ -648,7 +658,7 @@ func TestSyncFromFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expectedCats := []string{"Savings_TR", "Transfer_Internal", "Salary"}
+	expectedCats := []string{"Salary", "Transfer_Internal", "Savings_TR"}
 	for i, expected := range expectedCats {
 		if categories[i] != expected {
 			t.Errorf("transaction %d: expected category %s, got %s", i+1, expected, categories[i])
@@ -802,14 +812,14 @@ func TestSyncFromFixture_NoAccounts(t *testing.T) {
 	fixture := `{
 		"transactions": [
 			{
-				"transaction_id": "T1",
-				"booking_date": "2026-09-05",
-				"value_date": "2026-09-05",
-				"amount": {"value": "-100.00", "currency": "PLN"},
-				"creditor_name": "JOHN DOE",
+				"entry_reference": "tx-test",
+				"booking_date": "2026-09-06",
+				"value_date": "2026-09-06",
+				"transaction_amount": {"amount": "-100.00", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
 				"creditor_account": {"iban": "DE12345678901234567890"},
 				"debtor_account": {"iban": "PL987654321098765432109876"},
-				"remittance_information_unstructured": "",
+				"credit_debit_indicator": "DBIT",
 				"status": "BOOKED"
 			}
 		],
@@ -829,5 +839,168 @@ func TestConfigPath(t *testing.T) {
 	path := config.ConfigPath()
 	if path != "/tmp/testuser/.finance-cli/config.json" {
 		t.Errorf("unexpected config path: %s", path)
+	}
+}
+
+//nolint:paralleltest // subtests share parent's database
+func TestCompleteAuthSession(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	key := generateTestKey(t)
+	pemData := pemEncodePrivateKey(t, key)
+	appID := "test-app-id"
+
+	sessionResponse := `{
+		"session_id":"sess_new",
+		"accounts":[{"uid":"acc_1","iban":"PL123456789012345678901234","currency":"PLN","product":"Checking"}],
+		"aspsp":{"name":"Nordea","country":"FI"},
+		"psu_type":"personal",
+		"access":{"valid_until":"2026-12-06T12:00:00Z"}
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/sessions" {
+			t.Errorf("expected /sessions, got %s", r.URL.Path)
+		}
+		// Verify body contains code
+		var req struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if req.Code != "auth-code-123" {
+			t.Errorf("expected code 'auth-code-123', got %q", req.Code)
+		}
+		_, _ = w.Write([]byte(sessionResponse))
+	}))
+	defer server.Close()
+
+	ebClient, err := enablebanking.NewClient(appID, pemData, server.URL)
+	if err != nil {
+		t.Fatalf("creating EB client: %v", err)
+	}
+
+	// Insert a bank connection with the authorization_id as session_id
+	_, err = dbase.Exec(
+		"INSERT INTO bank_connections (provider, session_id, aspsp_id, consent_granted_at, consent_expires_at) VALUES (?, ?, ?, ?, ?)",
+		"enablebanking",
+		"sess_abc", // authorization_id
+		"bank1",
+		"2026-09-06T10:00:00Z",
+		"2026-09-06T10:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("inserting initial bank connection: %v", err)
+	}
+
+	// Complete the session
+	sessionID, consentExpiresAt, err := svc.CompleteAuthSession(ebClient, "auth-code-123", "sess_abc")
+	if err != nil {
+		t.Fatalf("CompleteAuthSession failed: %v", err)
+	}
+	if sessionID != "sess_new" {
+		t.Errorf("expected session_id 'sess_new', got %q", sessionID)
+	}
+	if consentExpiresAt == "" {
+		t.Error("expected non-empty consent_expires_at")
+	}
+
+	// Verify the bank_connections row was updated - look up by the new session_id
+	var expiresAt string
+	err = dbase.QueryRow("SELECT consent_expires_at FROM bank_connections WHERE session_id = ?", "sess_new").
+		Scan(&expiresAt)
+	if err != nil {
+		t.Fatalf("querying bank_connections: %v", err)
+	}
+	if expiresAt != "2026-12-06T12:00:00Z" {
+		t.Errorf("expected consent_expires_at '2026-12-06T12:00:00Z', got %q", expiresAt)
+	}
+}
+
+//nolint:paralleltest // subtests share parent's database
+func TestListBankConnections(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	// Insert a couple of connections
+	_, err := dbase.Exec(
+		"INSERT INTO bank_connections (provider, session_id, aspsp_id, consent_granted_at, consent_expires_at) VALUES (?, ?, ?, ?, ?)",
+		"enablebanking",
+		"sess_1",
+		"bank1",
+		"2026-09-01T10:00:00Z",
+		"2026-12-01T10:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("inserting first connection: %v", err)
+	}
+	_, err = dbase.Exec(
+		"INSERT INTO bank_connections (provider, session_id, aspsp_id, consent_granted_at, consent_expires_at) VALUES (?, ?, ?, ?, ?)",
+		"enablebanking",
+		"sess_2",
+		"bank2",
+		"2026-09-02T10:00:00Z",
+		"2026-12-02T10:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("inserting second connection: %v", err)
+	}
+
+	connections, err := svc.ListBankConnections()
+	if err != nil {
+		t.Fatalf("ListBankConnections failed: %v", err)
+	}
+	if len(connections) != 2 {
+		t.Fatalf("expected 2 connections, got %d", len(connections))
+	}
+	if connections[0].SessionID != "sess_1" {
+		t.Errorf("expected session_id 'sess_1', got %q", connections[0].SessionID)
+	}
+	if connections[1].SessionID != "sess_2" {
+		t.Errorf("expected session_id 'sess_2', got %q", connections[1].SessionID)
+	}
+}
+
+// generateTestKey creates an RSA private key for testing.
+func generateTestKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+	return key
+}
+
+// pemEncodePrivateKey encodes an RSA private key to PEM.
+func pemEncodePrivateKey(t *testing.T, key *rsa.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshaling private key: %v", err)
+	}
+	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
+	return pem.EncodeToMemory(block)
+}
+
+func TestListBankConnections_Empty(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	connections, err := svc.ListBankConnections()
+	if err != nil {
+		t.Fatalf("ListBankConnections failed: %v", err)
+	}
+	if len(connections) != 0 {
+		t.Errorf("expected 0 connections, got %d", len(connections))
 	}
 }

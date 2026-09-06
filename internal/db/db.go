@@ -85,6 +85,8 @@ func createSchema(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS bank_connections (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		provider TEXT NOT NULL,
+		session_id TEXT NOT NULL DEFAULT '',
+		aspsp_id TEXT NOT NULL DEFAULT '',
 		consent_granted_at TEXT NOT NULL,
 		consent_expires_at TEXT NOT NULL
 	);
@@ -92,5 +94,18 @@ func createSchema(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("creating schema: %w", err)
 	}
+
+	// Add new columns if missing (for existing databases).
+	_, _ = db.Exec("ALTER TABLE bank_connections ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE bank_connections ADD COLUMN aspsp_id TEXT NOT NULL DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE accounts ADD COLUMN external_id TEXT NOT NULL DEFAULT ''")
+
+	_, err := db.Exec(
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_account_tx ON transactions(bank_transaction_id, account_id)",
+	)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }

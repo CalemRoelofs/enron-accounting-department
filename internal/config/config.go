@@ -29,6 +29,9 @@ type Config struct {
 	SalaryMinGapDays     int                 `json:"salary_min_gap_days"`
 	SalaryMinAmountCents *int64              `json:"salary_min_amount_cents,omitempty"`
 	KnownCounterparties  []KnownCounterparty `json:"known_counterparties"`
+	ApplicationID        string              `json:"application_id"`
+	PrivateKeyPath       string              `json:"private_key_path"`
+	EnableBankingBaseURL string              `json:"enable_banking_base_url"`
 }
 
 // ConfigPath returns the path to the configuration file.

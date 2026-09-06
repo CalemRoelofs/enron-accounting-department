@@ -1,6 +1,6 @@
 // Package service provides business logic for financial operations.
 //
-//nolint:noctx // deliberate: DB calls use the default background context
+//nolint:noctx,godoclint // deliberate: DB calls use the default background context; package doc duplicates
 package service
 
 import (

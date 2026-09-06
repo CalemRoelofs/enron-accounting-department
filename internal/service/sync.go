@@ -6,37 +6,33 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/calemroelofs/enron-accounting-department/internal/config"
+	"github.com/calemroelofs/enron-accounting-department/internal/enablebanking"
 )
 
-const centsPerEuro = 100
+const (
+	centsPerEuro   = 100
+	categorySalary = "Salary"
+)
 
 // EnableBankingAmount represents an amount in the Enable Banking API.
-type EnableBankingAmount struct {
-	Value    string `json:"value"`
-	Currency string `json:"currency"`
-}
+//
+// Deprecated: use enablebanking.EnableBankingAmount.
+type EnableBankingAmount = enablebanking.EnableBankingAmount
 
 // EnableBankingAccount represents an account in the Enable Banking API.
-type EnableBankingAccount struct {
-	IBAN string `json:"iban"`
-}
+//
+// Deprecated: use enablebanking.EnableBankingAccount.
+type EnableBankingAccount = enablebanking.EnableBankingAccount
 
 // EnableBankingTransaction represents a transaction in the Enable Banking API.
-type EnableBankingTransaction struct {
-	TransactionID                     string               `json:"transaction_id"`
-	BookingDate                       string               `json:"booking_date"`
-	ValueDate                         string               `json:"value_date"`
-	Amount                            EnableBankingAmount  `json:"amount"`
-	CreditorName                      string               `json:"creditor_name"`
-	CreditorAccount                   EnableBankingAccount `json:"creditor_account"`
-	DebtorAccount                     EnableBankingAccount `json:"debtor_account"`
-	RemittanceInformationUnstructured string               `json:"remittance_information_unstructured"`
-	Status                            string               `json:"status"`
-}
+//
+// Deprecated: use enablebanking.Transaction.
+type EnableBankingTransaction = enablebanking.Transaction
 
 // EnableBankingResponse represents a response from the Enable Banking API.
 type EnableBankingResponse struct {
@@ -86,10 +82,14 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 
 	result := &SyncResult{Status: statusSuccess}
 
+	sort.Slice(resp.Transactions, func(i, j int) bool {
+		return resp.Transactions[i].BookingDate < resp.Transactions[j].BookingDate
+	})
+
 	for _, t := range resp.Transactions {
-		amountCents, err := ParseAmountCents(t.Amount.Value)
+		amountCents, err := ParseAmountCents(t.TransactionAmount.Value)
 		if err != nil {
-			return nil, fmt.Errorf("transaction %s: %w", t.TransactionID, err)
+			return nil, fmt.Errorf("transaction %s: %w", t.TransactionID(), err)
 		}
 
 		bookDate, err := time.Parse("2006-01-02", t.BookingDate)
@@ -97,8 +97,8 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 			return nil, fmt.Errorf("parsing date %s: %w", t.BookingDate, err)
 		}
 
-		creditorIBAN := t.CreditorAccount.IBAN
-		debtorIBAN := t.DebtorAccount.IBAN
+		creditorIBAN := t.CreditorAccount.IBAN()
+		debtorIBAN := t.DebtorAccount.IBAN()
 
 		isTransfer, err := s.MatchInterAccountTransfer(tx, creditorIBAN, debtorIBAN)
 		if err != nil {
@@ -117,13 +117,13 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 		}
 
 		isSalary := DetectSalary(
-			parseAmountFloat(t.Amount.Value),
+			parseAmountFloat(t.TransactionAmount.Value),
 			debtorIBAN,
-			t.RemittanceInformationUnstructured,
+			t.RemittanceInfo(),
 			cfg.EmployerIBAN,
 		)
-		if isSalary && !isTransfer && ListaPlacRe.MatchString(t.RemittanceInformationUnstructured) {
-			category = "Salary"
+		if isSalary && !isTransfer && ListaPlacRe.MatchString(t.RemittanceInfo()) {
+			category = categorySalary
 		}
 
 		var accountID int64
@@ -133,35 +133,36 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 		).Scan(&accountID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("no account found for IBANs in transaction %s", t.TransactionID)
+				return nil, fmt.Errorf("no account found for IBANs in transaction %s", t.TransactionID())
 			}
 			return nil, fmt.Errorf("looking up account: %w", err)
 		}
 
 		var transferTitle *string
-		if t.RemittanceInformationUnstructured != "" {
-			transferTitle = &t.RemittanceInformationUnstructured
+		info := t.RemittanceInfo()
+		if info != "" {
+			transferTitle = &info
 		}
 
 		tagsJSON := "[]"
 
 		_, err = tx.Exec(
-			`INSERT INTO transactions 
+			`INSERT OR IGNORE INTO transactions 
 			(bank_transaction_id, account_id, date, amount_cents, currency, 
 			 merchant_name, transfer_title, creditor_iban, debtor_iban, 
 			 category, tags, notes, needs_review) 
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.TransactionID, accountID, t.BookingDate, amountCents, t.Amount.Currency,
-			t.CreditorName, transferTitle, creditorIBAN, debtorIBAN,
+			t.TransactionID(), accountID, t.BookingDate, amountCents, t.TransactionAmount.Currency,
+			t.MerchantName(), transferTitle, creditorIBAN, debtorIBAN,
 			category, tagsJSON, nil, 0,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID, err)
+			return nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID(), err)
 		}
 
 		result.Ingested++
 
-		if isSalary && category == "Salary" {
+		if isSalary && category == categorySalary {
 			rolled, err := s.RollPayPeriod(tx, bookDate, cfg.SalaryMinGapDays)
 			if err != nil {
 				return nil, fmt.Errorf("rolling pay period: %w", err)
@@ -210,4 +211,164 @@ func (s *Service) CategorizeTransaction(id int64, category string, tags []string
 	}
 
 	return nil
+}
+
+// TransactionFetcher is an interface for fetching transactions from Enable Banking.
+type TransactionFetcher interface {
+	GetTransactions(accountID, continuationKey string, dateFrom time.Time) ([]enablebanking.Transaction, *string, error)
+}
+
+// SyncFromAPI fetches transactions from Enable Banking and ingests them.
+//
+//nolint:gocognit,funlen,noctx,govet // complexity, context, shadow by design
+func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*SyncResult, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result := &SyncResult{Status: statusSuccess}
+
+	rows, err := tx.Query("SELECT id, external_id, iban FROM accounts")
+	if err != nil {
+		return nil, fmt.Errorf("listing accounts: %w", err)
+	}
+	defer rows.Close()
+
+	type accountRow struct {
+		ID         int64
+		ExternalID string
+		IBAN       string
+	}
+	var accounts []accountRow
+	for rows.Next() {
+		var a accountRow
+		if err := rows.Scan(&a.ID, &a.ExternalID, &a.IBAN); err != nil {
+			return nil, fmt.Errorf("scanning account: %w", err)
+		}
+		accounts = append(accounts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("no accounts configured for sync")
+	}
+
+	for _, acc := range accounts {
+		var allTxs []enablebanking.Transaction
+		var ck string
+		for {
+			txs, nextKey, err := fetcher.GetTransactions(acc.ExternalID, ck, time.Time{})
+			if err != nil {
+				return nil, fmt.Errorf("fetching transactions for account %s: %w", acc.ExternalID, err)
+			}
+			allTxs = append(allTxs, txs...)
+			if nextKey == nil || *nextKey == "" {
+				break
+			}
+			ck = *nextKey
+		}
+
+		sort.Slice(allTxs, func(i, j int) bool {
+			return allTxs[i].BookingDate < allTxs[j].BookingDate
+		})
+
+		for _, t := range allTxs {
+			amountCents, err := ParseAmountCents(t.TransactionAmount.Value)
+			if err != nil {
+				return nil, fmt.Errorf("transaction %s: %w", t.TransactionID(), err)
+			}
+
+			bookDate, err := time.Parse("2006-01-02", t.BookingDate)
+			if err != nil {
+				return nil, fmt.Errorf("parsing date %s: %w", t.BookingDate, err)
+			}
+
+			creditorIBAN := t.CreditorAccount.IBAN()
+			debtorIBAN := t.DebtorAccount.IBAN()
+
+			isTransfer, err := s.MatchInterAccountTransfer(tx, creditorIBAN, debtorIBAN)
+			if err != nil {
+				return nil, fmt.Errorf("matching inter-account transfer: %w", err)
+			}
+
+			category := ""
+			if isTransfer {
+				category = "Transfer_Internal"
+				result.TransfersMatched++
+			} else {
+				match := MatchCounterparty(creditorIBAN, debtorIBAN, cfg.KnownCounterparties)
+				if match.Matched {
+					category = match.Category
+				}
+			}
+
+			isSalary := DetectSalary(
+				parseAmountFloat(t.TransactionAmount.Value),
+				debtorIBAN,
+				t.RemittanceInfo(),
+				cfg.EmployerIBAN,
+			)
+			if isSalary && !isTransfer && ListaPlacRe.MatchString(t.RemittanceInfo()) {
+				category = categorySalary
+			}
+
+			var accountID int64
+			// Try to match by IBAN first, fall back to the account we're currently syncing
+			err = tx.QueryRow(
+				"SELECT id FROM accounts WHERE iban = ? OR iban = ? LIMIT 1",
+				creditorIBAN, debtorIBAN,
+			).Scan(&accountID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					accountID = acc.ID
+				} else {
+					return nil, fmt.Errorf("looking up account for transaction %s: %w", t.TransactionID(), err)
+				}
+			}
+
+			var transferTitle *string
+			info := t.RemittanceInfo()
+			if info != "" {
+				transferTitle = &info
+			}
+
+			tagsJSON := "[]"
+
+			_, err = tx.Exec(
+				`INSERT OR IGNORE INTO transactions
+				(bank_transaction_id, account_id, date, amount_cents, currency,
+				 merchant_name, transfer_title, creditor_iban, debtor_iban,
+				 category, tags, notes, needs_review)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				t.TransactionID(), accountID, t.BookingDate, amountCents, t.TransactionAmount.Currency,
+				t.MerchantName(), transferTitle, creditorIBAN, debtorIBAN,
+				category, tagsJSON, nil, 0,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID(), err)
+			}
+
+			result.Ingested++
+
+			if isSalary && category == categorySalary {
+				rolled, err := s.RollPayPeriod(tx, bookDate, cfg.SalaryMinGapDays)
+				if err != nil {
+					return nil, fmt.Errorf("rolling pay period: %w", err)
+				}
+				if rolled {
+					result.PayPeriodRolled = true
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return result, nil
 }

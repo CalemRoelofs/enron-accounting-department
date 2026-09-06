@@ -8,6 +8,7 @@ type Account struct {
 	ID             int64  `json:"id"`
 	Name           string `json:"name"`
 	IBAN           string `json:"iban"`
+	ExternalID     string `json:"external_id"`
 	Type           string `json:"type"`
 	VirtualBalance int64  `json:"virtual_balance"`
 }
@@ -52,6 +53,8 @@ type PayPeriod struct {
 type BankConnection struct {
 	ID               int64     `json:"id"`
 	Provider         string    `json:"provider"`
+	SessionID        string    `json:"session_id,omitempty"`
+	AspspID          string    `json:"aspsp_id,omitempty"`
 	ConsentGrantedAt time.Time `json:"consent_granted_at"`
 	ConsentExpiresAt time.Time `json:"consent_expires_at"`
 }
