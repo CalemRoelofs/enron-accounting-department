@@ -163,7 +163,14 @@ func (c *Client) doRequest(method, path string, body any) ([]byte, error) {
 		}
 
 		if method == "GET" {
-			fmt.Fprintf(os.Stderr, "--- DEBUG [%s %s] ---\n%s\n--- END DEBUG ---\n", method, path, string(respBody))
+			fmt.Fprintf(
+				os.Stderr,
+				"--- DEBUG [%s %s] ---\nHeaders: %v\n%s\n--- END DEBUG ---\n",
+				method,
+				path,
+				resp.Header,
+				string(respBody),
+			)
 		}
 
 		res := c.processResponse(respBody, resp.StatusCode, resp.Header, attempt, maxRetries, backoffBase)
