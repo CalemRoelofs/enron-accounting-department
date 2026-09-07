@@ -220,10 +220,11 @@ type TransactionFetcher interface {
 
 // SyncFromAPI fetches transactions from Enable Banking and ingests them.
 //
-//nolint:gocognit,funlen,noctx,govet // complexity, context, shadow by design
+//nolint:cyclop,gocyclo,gocognit,funlen,noctx,govet // complexity, context, shadow by design
 func (s *Service) SyncFromAPI(
 	cfg *config.Config,
 	fetcher TransactionFetcher,
+	accountID int64,
 ) ([]enablebanking.Transaction, *SyncResult, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -258,6 +259,19 @@ func (s *Service) SyncFromAPI(
 
 	if len(accounts) == 0 {
 		return nil, nil, fmt.Errorf("no accounts configured for sync")
+	}
+
+	if accountID > 0 {
+		var filtered []accountRow
+		for _, a := range accounts {
+			if a.ID == accountID {
+				filtered = append(filtered, a)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, nil, fmt.Errorf("account %d not found", accountID)
+		}
+		accounts = filtered
 	}
 
 	var allTxs []enablebanking.Transaction

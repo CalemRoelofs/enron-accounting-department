@@ -45,6 +45,12 @@ func buildApp(cfg *config.Config, svc *service.Service) *cli.Command {
 						Usage:    "Save API response to a JSON fixture file for later replay with --fixture",
 						Required: false,
 					},
+					&cli.IntFlag{
+						Name:     "account",
+						Aliases:  []string{"a"},
+						Usage:    "Sync only this account ID (default: all accounts)",
+						Required: false,
+					},
 				},
 			},
 			{
@@ -179,7 +185,7 @@ func syncAction(svc *service.Service, cfg *config.Config) func(ctx context.Conte
 			return nil
 		}
 
-		txns, result, err := svc.SyncFromAPI(cfg, ebClient)
+		txns, result, err := svc.SyncFromAPI(cfg, ebClient, int64(cmd.Int("account")))
 		if err != nil {
 			output.WriteError(os.Stdout, fmt.Sprintf("sync failed: %v", err))
 			return nil
