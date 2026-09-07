@@ -58,28 +58,8 @@ Follow these rules strictly.
   at `salaryDate`. It queries `SELECT date FROM transactions WHERE category = 'Salary'`
   to check the gap between salaries.
 
-## Project structure
-
-```
-cmd/enron-accounting-department/  — CLI entry point (urfave/cli/v3)
-internal/
-  config/        — config loading, IBAN validation
-  db/            — SQLite schema, migrations (modernc.org/sqlite, no cgo)
-  enablebanking/ — HTTP client, JWT auth, request/response types
-  models/        — domain types
-  output/        — JSON output helpers
-  service/       — sync, auth, salary detection, pay periods, matching
-```
-
 ## Sensitive data
 
 - `*.pem` is gitignored. Private keys must never be committed.
 - `~/.finance-cli/config.json` lives outside the repo — contains IBANs and app secrets.
-- Test fixtures use fake IBANs (`PL123456789012345678901234`, `PL111111111111111111111111`).
-  Never check in real IBANs or personal data.
-
-## Rate limits
-
-Enable Banking allows **4 API pulls per ASPSP per day**. Use `--save` to dump fixture
-files, then `--fixture` for offline replay. Use `--account` to target specific accounts
-and distribute pulls across ASPSPs.
+- Test fixtures use fake IBANs. Never check in real IBANs or personal data.
