@@ -672,6 +672,46 @@ func TestSyncFromFixture(t *testing.T) {
 	}
 }
 
+func TestSyncFromFixture_SaveAndReplay(t *testing.T) {
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	seedAccount(t, dbase, "Millennium", "PL987654321098765432109876")
+
+	cfg := &config.Config{
+		EmployerIBAN:     "PL541140100000200301001002",
+		SalaryMinGapDays: 25,
+	}
+
+	fixtureJSON := `{
+		"transactions": [{
+			"entry_reference": "20260827-MILL-SALARY-00417",
+			"booking_date": "2026-08-27",
+			"value_date": "2026-08-27",
+			"transaction_amount": {"amount": "15319.93", "currency": "PLN"},
+			"creditor": {"name": "JOHN DOE"},
+			"creditor_account": {"iban": "PL987654321098765432109876"},
+			"debtor_account": {"iban": "PL541140100000200301001002"},
+			"remittance_information": ["Lista Plac 08/2026"],
+			"credit_debit_indicator": "CRDT",
+			"status": "BOOKED"
+		}],
+		"continuation_key": null
+	}`
+
+	result, err := svc.SyncFromFixture(cfg, []byte(fixtureJSON))
+	if err != nil {
+		t.Fatalf("SyncFromFixture failed: %v", err)
+	}
+	if result.Ingested != 1 {
+		t.Errorf("expected 1 ingested, got %d", result.Ingested)
+	}
+	if !result.PayPeriodRolled {
+		t.Error("expected pay period to be rolled for salary")
+	}
+}
+
 //nolint:paralleltest,tparallel // subtests share parent's database
 func TestCategorizeTransaction(t *testing.T) {
 	t.Parallel()

@@ -221,10 +221,13 @@ type TransactionFetcher interface {
 // SyncFromAPI fetches transactions from Enable Banking and ingests them.
 //
 //nolint:gocognit,funlen,noctx,govet // complexity, context, shadow by design
-func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*SyncResult, error) {
+func (s *Service) SyncFromAPI(
+	cfg *config.Config,
+	fetcher TransactionFetcher,
+) ([]enablebanking.Transaction, *SyncResult, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("beginning transaction: %w", err)
+		return nil, nil, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -232,7 +235,7 @@ func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*
 
 	rows, err := tx.Query("SELECT id, external_id, iban FROM accounts")
 	if err != nil {
-		return nil, fmt.Errorf("listing accounts: %w", err)
+		return nil, nil, fmt.Errorf("listing accounts: %w", err)
 	}
 	defer rows.Close()
 
@@ -245,46 +248,47 @@ func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*
 	for rows.Next() {
 		var a accountRow
 		if err := rows.Scan(&a.ID, &a.ExternalID, &a.IBAN); err != nil {
-			return nil, fmt.Errorf("scanning account: %w", err)
+			return nil, nil, fmt.Errorf("scanning account: %w", err)
 		}
 		accounts = append(accounts, a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
+		return nil, nil, fmt.Errorf("rows iteration error: %w", err)
 	}
 
 	if len(accounts) == 0 {
-		return nil, fmt.Errorf("no accounts configured for sync")
+		return nil, nil, fmt.Errorf("no accounts configured for sync")
 	}
 
+	var allTxs []enablebanking.Transaction
 	for _, acc := range accounts {
-		var allTxs []enablebanking.Transaction
+		var accountTxs []enablebanking.Transaction
 		var ck string
 		for {
 			txs, nextKey, err := fetcher.GetTransactions(acc.ExternalID, ck, time.Time{})
 			if err != nil {
-				return nil, fmt.Errorf("fetching transactions for account %s: %w", acc.ExternalID, err)
+				return nil, nil, fmt.Errorf("fetching transactions for account %s: %w", acc.ExternalID, err)
 			}
-			allTxs = append(allTxs, txs...)
+			accountTxs = append(accountTxs, txs...)
 			if nextKey == nil || *nextKey == "" {
 				break
 			}
 			ck = *nextKey
 		}
 
-		sort.Slice(allTxs, func(i, j int) bool {
-			return allTxs[i].BookingDate < allTxs[j].BookingDate
+		sort.Slice(accountTxs, func(i, j int) bool {
+			return accountTxs[i].BookingDate < accountTxs[j].BookingDate
 		})
 
-		for _, t := range allTxs {
+		for _, t := range accountTxs {
 			amountCents, err := ParseAmountCents(t.TransactionAmount.Value)
 			if err != nil {
-				return nil, fmt.Errorf("transaction %s: %w", t.TransactionID(), err)
+				return nil, nil, fmt.Errorf("transaction %s: %w", t.TransactionID(), err)
 			}
 
 			bookDate, err := time.Parse("2006-01-02", t.BookingDate)
 			if err != nil {
-				return nil, fmt.Errorf("parsing date %s: %w", t.BookingDate, err)
+				return nil, nil, fmt.Errorf("parsing date %s: %w", t.BookingDate, err)
 			}
 
 			creditorIBAN := t.CreditorAccount.IBAN()
@@ -292,7 +296,7 @@ func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*
 
 			isTransfer, err := s.MatchInterAccountTransfer(tx, creditorIBAN, debtorIBAN)
 			if err != nil {
-				return nil, fmt.Errorf("matching inter-account transfer: %w", err)
+				return nil, nil, fmt.Errorf("matching inter-account transfer: %w", err)
 			}
 
 			category := ""
@@ -326,7 +330,7 @@ func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*
 				if errors.Is(err, sql.ErrNoRows) {
 					accountID = acc.ID
 				} else {
-					return nil, fmt.Errorf("looking up account for transaction %s: %w", t.TransactionID(), err)
+					return nil, nil, fmt.Errorf("looking up account for transaction %s: %w", t.TransactionID(), err)
 				}
 			}
 
@@ -349,7 +353,7 @@ func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*
 				category, tagsJSON, nil, 0,
 			)
 			if err != nil {
-				return nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID(), err)
+				return nil, nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID(), err)
 			}
 
 			result.Ingested++
@@ -357,18 +361,20 @@ func (s *Service) SyncFromAPI(cfg *config.Config, fetcher TransactionFetcher) (*
 			if isSalary && category == categorySalary {
 				rolled, err := s.RollPayPeriod(tx, bookDate, cfg.SalaryMinGapDays)
 				if err != nil {
-					return nil, fmt.Errorf("rolling pay period: %w", err)
+					return nil, nil, fmt.Errorf("rolling pay period: %w", err)
 				}
 				if rolled {
 					result.PayPeriodRolled = true
 				}
 			}
 		}
+
+		allTxs = append(allTxs, accountTxs...)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing transaction: %w", err)
+		return nil, nil, fmt.Errorf("committing transaction: %w", err)
 	}
 
-	return result, nil
+	return allTxs, result, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -36,6 +37,12 @@ func buildApp(cfg *config.Config, svc *service.Service) *cli.Command {
 						Name:     "fixture",
 						Aliases:  []string{"f"},
 						Usage:    "Path to Enable Banking API JSON fixture file",
+						Required: false,
+					},
+					&cli.StringFlag{
+						Name:     "save",
+						Aliases:  []string{"s"},
+						Usage:    "Save API response to a JSON fixture file for later replay with --fixture",
 						Required: false,
 					},
 				},
@@ -172,10 +179,27 @@ func syncAction(svc *service.Service, cfg *config.Config) func(ctx context.Conte
 			return nil
 		}
 
-		result, err := svc.SyncFromAPI(cfg, ebClient)
+		txns, result, err := svc.SyncFromAPI(cfg, ebClient)
 		if err != nil {
 			output.WriteError(os.Stdout, fmt.Sprintf("sync failed: %v", err))
 			return nil
+		}
+
+		savePath := cmd.String("save")
+		if savePath != "" {
+			resp := service.EnableBankingResponse{
+				Transactions: txns,
+			}
+			data, marshalErr := json.MarshalIndent(resp, "", "  ")
+			if marshalErr != nil {
+				output.WriteError(os.Stdout, fmt.Sprintf("marshaling save data: %v", marshalErr))
+				return nil
+			}
+			//nolint:gosec // fixture file for --save replay; non-sensitive by design
+			if writeErr := os.WriteFile(savePath, data, 0644); writeErr != nil {
+				output.WriteError(os.Stdout, fmt.Sprintf("writing save file: %v", writeErr))
+				return nil
+			}
 		}
 
 		return output.WriteJSON(os.Stdout, result)
