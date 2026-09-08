@@ -60,6 +60,7 @@ func createSchema(db *sql.DB) error {
 		transfer_title TEXT,
 		creditor_iban TEXT NOT NULL DEFAULT '',
 		debtor_iban TEXT NOT NULL DEFAULT '',
+		credit_debit_indicator TEXT NOT NULL DEFAULT '',
 		category TEXT NOT NULL DEFAULT '',
 		tags TEXT NOT NULL DEFAULT '[]',
 		notes TEXT,
@@ -99,6 +100,7 @@ func createSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE bank_connections ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE bank_connections ADD COLUMN aspsp_id TEXT NOT NULL DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE accounts ADD COLUMN external_id TEXT NOT NULL DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE transactions ADD COLUMN credit_debit_indicator TEXT NOT NULL DEFAULT ''")
 
 	_, err := db.Exec(
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_account_tx ON transactions(bank_transaction_id, account_id)",

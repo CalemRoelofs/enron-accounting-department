@@ -146,14 +146,20 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 
 		tagsJSON := "[]"
 
+		if t.CreditDebitIndicator == "DBIT" {
+			amountCents = -amountCents
+		}
+
 		_, err = tx.Exec(
 			`INSERT OR IGNORE INTO transactions 
 			(bank_transaction_id, account_id, date, amount_cents, currency, 
-			 merchant_name, transfer_title, creditor_iban, debtor_iban, 
+			 merchant_name, transfer_title, creditor_iban, debtor_iban,
+			 credit_debit_indicator,
 			 category, tags, notes, needs_review) 
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			t.TransactionID(), accountID, t.BookingDate, amountCents, t.TransactionAmount.Currency,
 			t.MerchantName(), transferTitle, creditorIBAN, debtorIBAN,
+			t.CreditDebitIndicator,
 			category, tagsJSON, nil, 0,
 		)
 		if err != nil {
@@ -356,14 +362,20 @@ func (s *Service) SyncFromAPI(
 
 			tagsJSON := "[]"
 
+			if t.CreditDebitIndicator == "DBIT" {
+				amountCents = -amountCents
+			}
+
 			_, err = tx.Exec(
 				`INSERT OR IGNORE INTO transactions
 				(bank_transaction_id, account_id, date, amount_cents, currency,
 				 merchant_name, transfer_title, creditor_iban, debtor_iban,
+				 credit_debit_indicator,
 				 category, tags, notes, needs_review)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				t.TransactionID(), accountID, t.BookingDate, amountCents, t.TransactionAmount.Currency,
 				t.MerchantName(), transferTitle, creditorIBAN, debtorIBAN,
+				t.CreditDebitIndicator,
 				category, tagsJSON, nil, 0,
 			)
 			if err != nil {

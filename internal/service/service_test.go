@@ -581,7 +581,7 @@ func TestSyncFromFixture(t *testing.T) {
 				"entry_reference": "20260905-MILL-TR-99382",
 				"booking_date": "2026-09-05",
 				"value_date": "2026-09-05",
-				"transaction_amount": {"amount": "-2000.00", "currency": "PLN"},
+				"transaction_amount": {"amount": "2000.00", "currency": "PLN"},
 				"creditor": {"name": "JOHN DOE"},
 				"creditor_account": {"iban": "DE12345678901234567890"},
 				"debtor_account": {"iban": "PL987654321098765432109876"},
@@ -593,7 +593,7 @@ func TestSyncFromFixture(t *testing.T) {
 				"entry_reference": "20260903-MILL-REV-11223",
 				"booking_date": "2026-09-03",
 				"value_date": "2026-09-03",
-				"transaction_amount": {"amount": "-500.00", "currency": "PLN"},
+				"transaction_amount": {"amount": "500.00", "currency": "PLN"},
 				"creditor": {"name": "JOHN DOE"},
 				"creditor_account": {"iban": "LT304580906123456789"},
 				"debtor_account": {"iban": "PL987654321098765432109876"},
@@ -709,6 +709,84 @@ func TestSyncFromFixture_SaveAndReplay(t *testing.T) {
 	}
 	if !result.PayPeriodRolled {
 		t.Error("expected pay period to be rolled for salary")
+	}
+}
+
+//nolint:paralleltest // subtests share parent's database
+func TestSyncFromFixture_NegatesDebit(t *testing.T) {
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	seedAccount(t, dbase, "Millennium", "PL987654321098765432109876")
+
+	cfg := &config.Config{
+		EmployerIBAN:     "PL541140100000200301001002",
+		SalaryMinGapDays: 25,
+	}
+
+	fixture := `{
+		"transactions": [
+			{
+				"entry_reference": "DBIT-TEST-001",
+				"booking_date": "2026-09-01",
+				"value_date": "2026-09-01",
+				"transaction_amount": {"amount": "500.00", "currency": "PLN"},
+				"creditor": {"name": "ALDI"},
+				"creditor_account": {"iban": "DE44444444444444444444"},
+				"debtor_account": {"iban": "PL987654321098765432109876"},
+				"remittance_information": ["Groceries"],
+				"credit_debit_indicator": "DBIT",
+				"status": "BOOKED"
+			},
+			{
+				"entry_reference": "CRDT-TEST-001",
+				"booking_date": "2026-09-01",
+				"value_date": "2026-09-01",
+				"transaction_amount": {"amount": "1000.00", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
+				"creditor_account": {"iban": "PL987654321098765432109876"},
+				"debtor_account": {"iban": "PL55555555555555555555"},
+				"remittance_information": ["Refund"],
+				"credit_debit_indicator": "CRDT",
+				"status": "BOOKED"
+			}
+		],
+		"continuation_key": null
+	}`
+
+	result, err := svc.SyncFromFixture(cfg, []byte(fixture))
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if result.Ingested != 2 {
+		t.Errorf("expected 2 ingested, got %d", result.Ingested)
+	}
+
+	rows, qErr := dbase.Query(
+		"SELECT bank_transaction_id, amount_cents, credit_debit_indicator FROM transactions ORDER BY bank_transaction_id",
+	)
+	if qErr != nil {
+		t.Fatalf("query failed: %v", qErr)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ref string
+		var cents int64
+		var indicator string
+		if err := rows.Scan(&ref, &cents, &indicator); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		if indicator == "DBIT" && cents >= 0 {
+			t.Errorf("expected negative amount_cents for DBIT %s, got %d", ref, cents)
+		}
+		if indicator == "CRDT" && cents <= 0 {
+			t.Errorf("expected positive amount_cents for CRDT %s, got %d", ref, cents)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 
