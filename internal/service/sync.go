@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/calemroelofs/enron-accounting-department/internal/config"
@@ -42,10 +43,11 @@ type EnableBankingResponse struct {
 
 // SyncResult holds the result of a sync operation.
 type SyncResult struct {
-	Status           string `json:"status"`
-	Ingested         int    `json:"ingested"`
-	TransfersMatched int    `json:"transfers_matched"`
-	PayPeriodRolled  bool   `json:"pay_period_rolled"`
+	Status           string   `json:"status"`
+	Ingested         int      `json:"ingested"`
+	TransfersMatched int      `json:"transfers_matched"`
+	PayPeriodRolled  bool     `json:"pay_period_rolled"`
+	SkippedAccounts  []string `json:"skipped_accounts,omitempty"`
 }
 
 // SyncError holds sync error details.
@@ -282,6 +284,15 @@ func (s *Service) SyncFromAPI(
 
 	var allTxs []enablebanking.Transaction
 	for _, acc := range accounts {
+		if strings.TrimSpace(acc.ExternalID) == "" {
+			identifier := strings.TrimSpace(acc.IBAN)
+			if identifier == "" {
+				identifier = fmt.Sprintf("id=%d", acc.ID)
+			}
+			result.SkippedAccounts = append(result.SkippedAccounts, identifier)
+			continue
+		}
+
 		var accountTxs []enablebanking.Transaction
 		var ck string
 		for {

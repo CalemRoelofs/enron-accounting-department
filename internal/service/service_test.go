@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -787,6 +788,88 @@ func TestSyncFromFixture_NegatesDebit(t *testing.T) {
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type fakeTransactionFetcher struct {
+	results map[string][]enablebanking.Transaction
+	calls   []string
+}
+
+func (f *fakeTransactionFetcher) GetTransactions(
+	accountID, _ string,
+	_ time.Time,
+) ([]enablebanking.Transaction, *string, error) {
+	f.calls = append(f.calls, accountID)
+	if accountID == "" {
+		return nil, nil, errors.New("status 404")
+	}
+	return f.results[accountID], nil, nil
+}
+
+func TestSyncFromAPI_SkipsAccountsWithoutExternalID(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	validIBAN := "PL987654321098765432109876"
+	manualIBAN := "PL92116022020000000575810839"
+
+	_, err := dbase.Exec(
+		"INSERT INTO accounts (name, iban, external_id) VALUES (?, ?, ?)",
+		"Millennium", validIBAN, "uid-valid",
+	)
+	if err != nil {
+		t.Fatalf("seeding valid account: %v", err)
+	}
+	_, err = dbase.Exec(
+		"INSERT INTO accounts (name, iban, external_id) VALUES (?, ?, ?)",
+		"Manual", manualIBAN, "",
+	)
+	if err != nil {
+		t.Fatalf("seeding manual account: %v", err)
+	}
+
+	fetcher := &fakeTransactionFetcher{
+		results: map[string][]enablebanking.Transaction{
+			"uid-valid": {{
+				EntryReference:        "TX-VALID-1",
+				BookingDate:           "2026-09-05",
+				ValueDate:             "2026-09-05",
+				TransactionAmount:     enablebanking.EnableBankingAmount{Value: "100.00", Currency: "PLN"},
+				CreditorAccount:       enablebanking.EnableBankingAccount{IBANRaw: "DE44444444444444444444"},
+				DebtorAccount:         enablebanking.EnableBankingAccount{IBANRaw: validIBAN},
+				RemittanceInformation: []string{"Groceries"},
+				CreditDebitIndicator:  "DBIT",
+				Status:                "BOOKED",
+			}},
+		},
+	}
+
+	cfg := &config.Config{EmployerIBAN: "PL541140100000200301001002", SalaryMinGapDays: 25}
+
+	allTxs, result, err := svc.SyncFromAPI(cfg, fetcher, 0)
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if result.Ingested != 1 {
+		t.Errorf("expected 1 ingested, got %d", result.Ingested)
+	}
+	if len(allTxs) != 1 {
+		t.Errorf("expected 1 transaction returned, got %d", len(allTxs))
+	}
+	if len(result.SkippedAccounts) != 1 || result.SkippedAccounts[0] != manualIBAN {
+		t.Errorf("expected skipped accounts [%s], got %v", manualIBAN, result.SkippedAccounts)
+	}
+	if len(fetcher.calls) != 1 || fetcher.calls[0] != "uid-valid" {
+		t.Errorf("expected fetcher called only for uid-valid, got %v", fetcher.calls)
+	}
+
+	var count int
+	_ = dbase.QueryRow("SELECT COUNT(*) FROM transactions").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 transaction in db, got %d", count)
 	}
 }
 
