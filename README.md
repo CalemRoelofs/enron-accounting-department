@@ -73,6 +73,35 @@ go build -o enron-accounting-department ./cmd/enron-accounting-department/
 ./enron-accounting-department sync --fixture /tmp/today-fixture.json
 ```
 
+### Categorise
+
+```bash
+# Assign category to a single transaction
+./enron-accounting-department categorize --id 42 --category Groceries --tags food,weekly
+```
+
+### Category rules
+
+```bash
+# Add a rule — transactions with "BIEDRONKA" in the title get category Groceries
+./enron-accounting-department rules add --field title --pattern "BIEDRONKA" --category Groceries --tags food,weekly
+
+# Add a rule — transactions from a specific IBAN get a category
+./enron-accounting-department rules add --field creditor_iban --pattern "PL92116022020000000575810839" --category Millennium
+
+# List all rules
+./enron-accounting-department rules list
+
+# Remove a rule
+./enron-accounting-department rules remove --id 3
+
+# Apply rules to uncategorised transactions (dry-run first)
+./enron-accounting-department rules apply --dry-run
+
+# Apply rules for real
+./enron-accounting-department rules apply
+```
+
 ### Query
 
 ```bash
