@@ -1,5 +1,5 @@
 .aider*
-# Binaries
-finance-cli
-enron-accounting-department
+# Binaries (root-level only, so cmd/enron-accounting-department/ is not ignored)
+/finance-cli
+/enron-accounting-department
 *.pem
