@@ -52,6 +52,88 @@ func TestInitDBReadOnly(t *testing.T) {
 	t.Skip(":memory: does not support mode=ro URI; skipped")
 }
 
+func TestInitDB_CreatesCategoryRules(t *testing.T) {
+	t.Parallel()
+	dbase, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer dbase.Close()
+
+	var count int
+	err = dbase.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='category_rules'",
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("checking category_rules table: %v", err)
+	}
+	if count != 1 {
+		t.Fatal("category_rules table not found")
+	}
+
+	// Verify columns exist with correct types
+	type colInfo struct {
+		cid      int
+		name     string
+		colType  string
+		notNull  int
+		defaultV *string
+		pk       int
+	}
+	rows, err := dbase.Query("PRAGMA table_info('category_rules')")
+	if err != nil {
+		t.Fatalf("querying table info: %v", err)
+	}
+	defer rows.Close()
+
+	got := make(map[string]colInfo)
+	for rows.Next() {
+		var c colInfo
+		if err := rows.Scan(&c.cid, &c.name, &c.colType, &c.notNull, &c.defaultV, &c.pk); err != nil {
+			t.Fatalf("scanning column info: %v", err)
+		}
+		got[c.name] = c
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating columns: %v", err)
+	}
+
+	want := map[string]struct {
+		colType string
+		notNull bool
+		pk      bool
+	}{
+		"id":         {"INTEGER", false, true},
+		"field":      {"TEXT", true, false},
+		"pattern":    {"TEXT", true, false},
+		"category":   {"TEXT", true, false},
+		"tags":       {"TEXT", true, false},
+		"created_at": {"TEXT", true, false},
+	}
+	for name, w := range want {
+		c, ok := got[name]
+		if !ok {
+			t.Errorf("column %s not found", name)
+			continue
+		}
+		if c.colType != w.colType {
+			t.Errorf("column %s: expected type %s, got %s", name, w.colType, c.colType)
+		}
+		if (c.notNull == 1) != w.notNull {
+			t.Errorf("column %s: expected notNull=%v, got %d", name, w.notNull, c.notNull)
+		}
+		if (c.pk == 1) != w.pk {
+			t.Errorf("column %s: expected pk=%v, got %d", name, w.pk, c.pk)
+		}
+	}
+
+	// Second InitDB must not error (idempotent)
+	_, err = db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("second InitDB on same DB failed: %v", err)
+	}
+}
+
 func TestInitDB_WALMode(t *testing.T) {
 	t.Parallel()
 	dbase, err := db.InitDB(":memory:")

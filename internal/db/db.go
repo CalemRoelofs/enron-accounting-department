@@ -97,6 +97,15 @@ func createSchema(db *sql.DB) error {
 		consent_expires_at TEXT NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS category_rules (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		field TEXT NOT NULL,
+		pattern TEXT NOT NULL,
+		category TEXT NOT NULL,
+		tags TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL DEFAULT ''
+	);
+
 	CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY
 	);
