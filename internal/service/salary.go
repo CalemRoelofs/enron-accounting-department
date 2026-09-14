@@ -27,10 +27,25 @@ func DetectSalary(amountValue float64, debtorIBAN, _ /* transferTitle */, employ
 //
 //nolint:govet,noctx // err shadowing and context use within function are by design
 func (s *Service) RollPayPeriod(tx *sql.Tx, salaryDate time.Time, minGapDays int) (bool, error) {
+	startDate := salaryDate.Format("2006-01-02")
+
+	// Idempotency: a period already starting on this salary date means this
+	// salary has already been rolled (e.g. a historical replay). Do nothing.
+	var existing int
+	if err := tx.QueryRow(
+		"SELECT COUNT(*) FROM pay_periods WHERE start_date = ?",
+		startDate,
+	).Scan(&existing); err != nil {
+		return false, fmt.Errorf("checking existing period: %w", err)
+	}
+	if existing > 0 {
+		return false, nil
+	}
+
 	var lastSalaryDate *string
 	err := tx.QueryRow(
 		`SELECT date FROM transactions WHERE category = 'Salary' AND date < ? ORDER BY date DESC LIMIT 1`,
-		salaryDate.Format("2006-01-02"),
+		startDate,
 	).Scan(&lastSalaryDate)
 	if err != nil && err != sql.ErrNoRows {
 		return false, fmt.Errorf("querying last salary: %w", err)
@@ -47,24 +62,16 @@ func (s *Service) RollPayPeriod(tx *sql.Tx, salaryDate time.Time, minGapDays int
 		}
 	}
 
-	var openPeriodCount int
-	if err := tx.QueryRow(
-		"SELECT COUNT(*) FROM pay_periods WHERE end_date IS NULL",
-	).Scan(&openPeriodCount); err != nil {
-		return false, fmt.Errorf("counting open periods: %w", err)
+	// Only close periods that started before this salary. The `start_date <= ?`
+	// guard guarantees a closed period never ends before it starts.
+	closeDate := salaryDate.AddDate(0, 0, -1).Format("2006-01-02")
+	if _, err := tx.Exec(
+		"UPDATE pay_periods SET end_date = ? WHERE end_date IS NULL AND start_date < ? AND start_date <= ?",
+		closeDate, startDate, closeDate,
+	); err != nil {
+		return false, fmt.Errorf("closing open period: %w", err)
 	}
 
-	if openPeriodCount > 0 {
-		closeDate := salaryDate.AddDate(0, 0, -1).Format("2006-01-02")
-		if _, err := tx.Exec(
-			"UPDATE pay_periods SET end_date = ? WHERE end_date IS NULL",
-			closeDate,
-		); err != nil {
-			return false, fmt.Errorf("closing open period: %w", err)
-		}
-	}
-
-	startDate := salaryDate.Format("2006-01-02")
 	if _, err := tx.Exec(
 		"INSERT INTO pay_periods (start_date) VALUES (?)",
 		startDate,

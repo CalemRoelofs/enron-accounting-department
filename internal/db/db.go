@@ -6,10 +6,15 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	// Register the sqlite driver.
 	_ "modernc.org/sqlite"
 )
+
+// payPeriodNormalizationVersion is the migration that repairs corrupt
+// pay_periods rows (duplicates and end dates before start dates).
+const payPeriodNormalizationVersion = 1
 
 // InitDB opens or creates the database and applies the schema.
 func InitDB(path string) (*sql.DB, error) {
@@ -91,6 +96,10 @@ func createSchema(db *sql.DB) error {
 		consent_granted_at TEXT NOT NULL,
 		consent_expires_at TEXT NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("creating schema: %w", err)
@@ -109,5 +118,103 @@ func createSchema(db *sql.DB) error {
 		return err
 	}
 
+	if migrateErr := applyMigrations(db); migrateErr != nil {
+		return migrateErr
+	}
+
 	return nil
+}
+
+// applyMigrations runs one-time schema migrations. Each migration is recorded
+// in schema_migrations so it is skipped on subsequent opens.
+func applyMigrations(db *sql.DB) error {
+	var applied int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+		payPeriodNormalizationVersion,
+	).Scan(&applied); err != nil {
+		return fmt.Errorf("checking schema version: %w", err)
+	}
+	if applied > 0 {
+		return nil
+	}
+
+	if err := normalizePayPeriods(db); err != nil {
+		return err
+	}
+
+	if _, err := db.Exec(
+		"INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+		payPeriodNormalizationVersion,
+	); err != nil {
+		return fmt.Errorf("recording schema version: %w", err)
+	}
+
+	return nil
+}
+
+// normalizePayPeriods repairs corrupt pay_periods rows. It is idempotent and
+// leaves already-correct rows untouched: duplicate start_dates are collapsed
+// (keeping the highest id) and every end_date is recomputed as the day before
+// the next period's start_date, with the latest period left open.
+func normalizePayPeriods(db *sql.DB) error {
+	if _, err := db.Exec(
+		`DELETE FROM pay_periods
+		 WHERE id NOT IN (SELECT MAX(id) FROM pay_periods GROUP BY start_date)`,
+	); err != nil {
+		return fmt.Errorf("deduplicating pay periods: %w", err)
+	}
+
+	rows, err := db.Query("SELECT id, start_date, end_date FROM pay_periods ORDER BY start_date, id")
+	if err != nil {
+		return fmt.Errorf("querying pay periods: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type period struct {
+		id        int64
+		startDate string
+		endDate   *string
+	}
+
+	var periods []period
+	for rows.Next() {
+		var p period
+		if scanErr := rows.Scan(&p.id, &p.startDate, &p.endDate); scanErr != nil {
+			return fmt.Errorf("scanning pay period: %w", scanErr)
+		}
+		periods = append(periods, p)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return fmt.Errorf("iterating pay periods: %w", rowsErr)
+	}
+
+	for i, p := range periods {
+		var want *string
+		if i < len(periods)-1 {
+			next, parseErr := time.Parse("2006-01-02", periods[i+1].startDate)
+			if parseErr != nil {
+				return fmt.Errorf("parsing start date %q: %w", periods[i+1].startDate, parseErr)
+			}
+			closeDate := next.AddDate(0, 0, -1).Format("2006-01-02")
+			want = &closeDate
+		}
+
+		if sameEndDate(p.endDate, want) {
+			continue
+		}
+
+		if _, updateErr := db.Exec("UPDATE pay_periods SET end_date = ? WHERE id = ?", want, p.id); updateErr != nil {
+			return fmt.Errorf("updating pay period %d: %w", p.id, updateErr)
+		}
+	}
+
+	return nil
+}
+
+func sameEndDate(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }

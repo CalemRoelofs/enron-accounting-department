@@ -310,6 +310,145 @@ func TestRollPayPeriod(t *testing.T) {
 	})
 }
 
+func seedSalaryTransactions(t *testing.T, dbase *sql.DB, dates ...string) {
+	t.Helper()
+	for _, d := range dates {
+		_, err := dbase.Exec(
+			"INSERT INTO transactions (bank_transaction_id, account_id, date, amount_cents, currency, creditor_iban, debtor_iban, category) VALUES (?, 0, ?, 1531993, 'PLN', '', 'PL541140100000200301001002', 'Salary')",
+			"sal-"+d,
+			d,
+		)
+		if err != nil {
+			t.Fatalf("seeding salary %s: %v", d, err)
+		}
+	}
+}
+
+func rollSalaryDates(t *testing.T, svc *service.Service, dbase *sql.DB, dates ...string) {
+	t.Helper()
+	for _, d := range dates {
+		date, err := time.Parse("2006-01-02", d)
+		if err != nil {
+			t.Fatalf("parsing date %s: %v", d, err)
+		}
+		tx, err := dbase.Begin()
+		if err != nil {
+			t.Fatalf("beginning tx: %v", err)
+		}
+		if _, err := svc.RollPayPeriod(tx, date, 25); err != nil {
+			t.Fatalf("rolling %s: %v", d, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("committing %s: %v", d, err)
+		}
+	}
+}
+
+//nolint:paralleltest // subtests share parent's database
+func TestRollPayPeriod_Idempotent(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	dates := []string{"2026-06-29", "2026-07-30", "2026-08-27"}
+	seedSalaryTransactions(t, dbase, dates...)
+
+	for range 3 {
+		rollSalaryDates(t, svc, dbase, dates...)
+	}
+
+	type period struct {
+		start string
+		end   *string
+	}
+	rows, err := dbase.Query("SELECT start_date, end_date FROM pay_periods ORDER BY start_date")
+	if err != nil {
+		t.Fatalf("querying periods: %v", err)
+	}
+	defer rows.Close()
+
+	var got []period
+	for rows.Next() {
+		var p period
+		if err := rows.Scan(&p.start, &p.end); err != nil {
+			t.Fatalf("scanning period: %v", err)
+		}
+		got = append(got, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating periods: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected exactly 3 periods after 3 syncs, got %d", len(got))
+	}
+
+	want := []period{
+		{start: "2026-06-29", end: new("2026-07-29")},
+		{start: "2026-07-30", end: new("2026-08-26")},
+		{start: "2026-08-27", end: nil},
+	}
+	for i, w := range want {
+		if got[i].start != w.start {
+			t.Errorf("period %d: expected start %s, got %s", i, w.start, got[i].start)
+		}
+		switch {
+		case got[i].end == nil && w.end == nil:
+		case got[i].end == nil || w.end == nil:
+			t.Errorf("period %d (%s): expected end %v, got %v", i, w.start, w.end, got[i].end)
+		case *got[i].end != *w.end:
+			t.Errorf("period %d (%s): expected end %s, got %s", i, w.start, *w.end, *got[i].end)
+		}
+	}
+}
+
+//nolint:paralleltest // subtests share parent's database
+func TestRollPayPeriod_NeverEndsBeforeStart(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	dates := []string{"2026-06-29", "2026-07-30", "2026-08-27"}
+	seedSalaryTransactions(t, dbase, dates...)
+	for range 3 {
+		rollSalaryDates(t, svc, dbase, dates...)
+	}
+
+	var violations int
+	if err := dbase.QueryRow(
+		"SELECT COUNT(*) FROM pay_periods WHERE end_date IS NOT NULL AND end_date < start_date",
+	).Scan(&violations); err != nil {
+		t.Fatalf("counting violations: %v", err)
+	}
+	if violations != 0 {
+		t.Errorf("expected no period to end before it starts, got %d violations", violations)
+	}
+}
+
+//nolint:paralleltest // subtests share parent's database
+func TestRollPayPeriod_OlderSalaryKeepsNewerOpenPeriod(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	seedSalaryTransactions(t, dbase, "2026-06-29", "2026-08-27")
+	rollSalaryDates(t, svc, dbase, "2026-08-27")
+	rollSalaryDates(t, svc, dbase, "2026-06-29")
+
+	var endDate *string
+	if err := dbase.QueryRow(
+		"SELECT end_date FROM pay_periods WHERE start_date = '2026-08-27'",
+	).Scan(&endDate); err != nil {
+		t.Fatalf("querying newer period: %v", err)
+	}
+	if endDate != nil {
+		t.Errorf("re-rolling an older salary mutated the newer open period: end_date = %s", *endDate)
+	}
+}
+
 //nolint:paralleltest,tparallel // subtests share parent's database
 func TestAddLineItem(t *testing.T) {
 	t.Parallel()

@@ -152,7 +152,7 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 			amountCents = -amountCents
 		}
 
-		_, err = tx.Exec(
+		res, err := tx.Exec(
 			`INSERT OR IGNORE INTO transactions 
 			(bank_transaction_id, account_id, date, amount_cents, currency, 
 			 merchant_name, transfer_title, creditor_iban, debtor_iban,
@@ -168,9 +168,14 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 			return nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID(), err)
 		}
 
+		inserted, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("checking insert for transaction %s: %w", t.TransactionID(), err)
+		}
+
 		result.Ingested++
 
-		if isSalary && category == categorySalary {
+		if inserted == 1 && isSalary && category == categorySalary {
 			rolled, err := s.RollPayPeriod(tx, bookDate, cfg.SalaryMinGapDays)
 			if err != nil {
 				return nil, fmt.Errorf("rolling pay period: %w", err)
@@ -377,7 +382,7 @@ func (s *Service) SyncFromAPI(
 				amountCents = -amountCents
 			}
 
-			_, err = tx.Exec(
+			res, err := tx.Exec(
 				`INSERT OR IGNORE INTO transactions
 				(bank_transaction_id, account_id, date, amount_cents, currency,
 				 merchant_name, transfer_title, creditor_iban, debtor_iban,
@@ -393,9 +398,14 @@ func (s *Service) SyncFromAPI(
 				return nil, nil, fmt.Errorf("inserting transaction %s: %w", t.TransactionID(), err)
 			}
 
+			inserted, err := res.RowsAffected()
+			if err != nil {
+				return nil, nil, fmt.Errorf("checking insert for transaction %s: %w", t.TransactionID(), err)
+			}
+
 			result.Ingested++
 
-			if isSalary && category == categorySalary {
+			if inserted == 1 && isSalary && category == categorySalary {
 				rolled, err := s.RollPayPeriod(tx, bookDate, cfg.SalaryMinGapDays)
 				if err != nil {
 					return nil, nil, fmt.Errorf("rolling pay period: %w", err)
