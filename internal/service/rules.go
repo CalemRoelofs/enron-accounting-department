@@ -1,6 +1,7 @@
 package service
 
 import (
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -108,6 +109,31 @@ func (s *Service) AddRule(field, pattern, category, tags string) (int64, error) 
 //nolint:noctx // deliberate: DB.Query uses background context implicitly
 func (s *Service) ListRules() ([]CategoryRule, error) {
 	rows, err := s.DB.Query("SELECT id, field, pattern, category, tags FROM category_rules ORDER BY id")
+	if err != nil {
+		return nil, fmt.Errorf("querying rules: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var rules []CategoryRule
+	for rows.Next() {
+		var r CategoryRule
+		if scanErr := rows.Scan(&r.ID, &r.Field, &r.Pattern, &r.Category, &r.Tags); scanErr != nil {
+			return nil, fmt.Errorf("scanning rule: %w", scanErr)
+		}
+		rules = append(rules, r)
+	}
+	if iterErr := rows.Err(); iterErr != nil {
+		return nil, fmt.Errorf("iterating rules: %w", iterErr)
+	}
+
+	return rules, nil
+}
+
+// listRulesTx loads rules within a transaction.
+//
+//nolint:noctx // deliberate: Tx.Query uses background context implicitly
+func (s *Service) listRulesTx(tx *sql.Tx) ([]CategoryRule, error) {
+	rows, err := tx.Query("SELECT id, field, pattern, category, tags FROM category_rules ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("querying rules: %w", err)
 	}

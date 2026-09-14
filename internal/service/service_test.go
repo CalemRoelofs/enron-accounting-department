@@ -931,6 +931,169 @@ func TestSyncFromFixture_NegatesDebit(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // uses temp file DB
+func TestSyncFromFixture_WithRules(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/test.db"
+	dbase, err := db.InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db: %v", err)
+	}
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	seedAccount(t, dbase, "Millennium", "PL987654321098765432109876")
+	seedAccount(t, dbase, "Revolut", "LT304580906123456789")
+
+	cfg := &config.Config{
+		EmployerIBAN:     "PL541140100000200301001002",
+		SalaryMinGapDays: 25,
+		KnownCounterparties: []config.KnownCounterparty{
+			{IBAN: "DE12345678901234567890", Label: "Trade Republic", Category: "Savings_TR"},
+		},
+	}
+
+	// Add a rule that should match the uncategorised transaction (title contains "BIEDRONKA")
+	_, err = svc.AddRule("title", "BIEDRONKA", "Groceries", `["auto"]`)
+	if err != nil {
+		t.Fatalf("add rule: %v", err)
+	}
+
+	fixture := `{
+		"transactions": [
+			{
+				"entry_reference": "20260905-MILL-GROCERY-001",
+				"booking_date": "2026-09-05",
+				"value_date": "2026-09-05",
+				"transaction_amount": {"amount": "200.00", "currency": "PLN"},
+				"creditor": {"name": "JMP S.A."},
+				"creditor_account": {"iban": "DE44444444444444444444"},
+				"debtor_account": {"iban": "PL987654321098765432109876"},
+				"remittance_information": ["JMP S.A. BIEDRONKA 3698  WROCLAW POL 2026-08-25"],
+				"credit_debit_indicator": "DBIT",
+				"status": "BOOKED"
+			},
+			{
+				"entry_reference": "20260903-MILL-REV-11223",
+				"booking_date": "2026-09-03",
+				"value_date": "2026-09-03",
+				"transaction_amount": {"amount": "500.00", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
+				"creditor_account": {"iban": "LT304580906123456789"},
+				"debtor_account": {"iban": "PL987654321098765432109876"},
+				"remittance_information": ["Top up"],
+				"credit_debit_indicator": "DBIT",
+				"status": "BOOKED"
+			},
+			{
+				"entry_reference": "20260905-MILL-TR-99382",
+				"booking_date": "2026-09-05",
+				"value_date": "2026-09-05",
+				"transaction_amount": {"amount": "2000.00", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
+				"creditor_account": {"iban": "DE12345678901234567890"},
+				"debtor_account": {"iban": "PL987654321098765432109876"},
+				"remittance_information": ["Trade Republic Deposit"],
+				"credit_debit_indicator": "DBIT",
+				"status": "BOOKED"
+			},
+			{
+				"entry_reference": "20260827-MILL-SALARY-00417",
+				"booking_date": "2026-08-27",
+				"value_date": "2026-08-27",
+				"transaction_amount": {"amount": "15319.93", "currency": "PLN"},
+				"creditor": {"name": "JOHN DOE"},
+				"creditor_account": {"iban": "PL987654321098765432109876"},
+				"debtor_account": {"iban": "PL541140100000200301001002"},
+				"remittance_information": ["Lista Plac 08/2026"],
+				"credit_debit_indicator": "CRDT",
+				"status": "BOOKED"
+			}
+		],
+		"continuation_key": null
+	}`
+	var syncResult *service.SyncResult
+	syncResult, err = svc.SyncFromFixture(cfg, []byte(fixture))
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if syncResult.Status != "success" {
+		t.Errorf("expected success, got %s", syncResult.Status)
+	}
+	if syncResult.Ingested != 4 {
+		t.Errorf("expected 4 ingested, got %d", syncResult.Ingested)
+	}
+
+	rows, qErr := dbase.Query(
+		"SELECT bank_transaction_id, category, tags FROM transactions ORDER BY id",
+	)
+	if qErr != nil {
+		t.Fatalf("querying transactions: %v", qErr)
+	}
+	defer rows.Close()
+
+	var got []struct {
+		ref      string
+		category string
+		tags     string
+	}
+	for rows.Next() {
+		var r struct {
+			ref      string
+			category string
+			tags     string
+		}
+		if err := rows.Scan(&r.ref, &r.category, &r.tags); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(got))
+	}
+
+	// Date order: 2026-08-27 (Salary), 2026-09-03 (Transfer), 2026-09-05 (Grocery+TR)
+
+	// Index 0: Salary -> ladder wins over rule
+	if got[0].ref != "20260827-MILL-SALARY-00417" {
+		t.Fatalf("unexpected first ref: %s", got[0].ref)
+	}
+	if got[0].category != "Salary" {
+		t.Errorf("expected Salary, got %s", got[0].category)
+	}
+
+	// Index 1: Transfer_Internal -> ladder wins over rule
+	if got[1].ref != "20260903-MILL-REV-11223" {
+		t.Fatalf("unexpected second ref: %s", got[1].ref)
+	}
+	if got[1].category != "Transfer_Internal" {
+		t.Errorf("expected Transfer_Internal, got %s", got[1].category)
+	}
+
+	// Index 2: Grocery debit -> rule should apply (blank after ladder)
+	if got[2].ref != "20260905-MILL-GROCERY-001" {
+		t.Fatalf("unexpected third ref: %s", got[2].ref)
+	}
+	if got[2].category != "Groceries" {
+		t.Errorf("expected Groceries from rule, got %s", got[2].category)
+	}
+	if got[2].tags != `["auto"]` {
+		t.Errorf("expected [\"auto\"] tags from rule, got %s", got[2].tags)
+	}
+
+	// Index 3: Counterparty (Savings_TR) -> ladder wins over rule
+	if got[3].ref != "20260905-MILL-TR-99382" {
+		t.Fatalf("unexpected fourth ref: %s", got[3].ref)
+	}
+	if got[3].category != "Savings_TR" {
+		t.Errorf("expected Savings_TR, got %s", got[3].category)
+	}
+}
+
 type fakeTransactionFetcher struct {
 	results map[string][]enablebanking.Transaction
 	calls   []string

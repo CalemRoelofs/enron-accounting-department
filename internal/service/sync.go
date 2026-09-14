@@ -84,6 +84,11 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 
 	result := &SyncResult{Status: statusSuccess}
 
+	rules, ruleErr := s.listRulesTx(tx)
+	if ruleErr != nil {
+		return nil, fmt.Errorf("loading rules: %w", ruleErr)
+	}
+
 	sort.Slice(resp.Transactions, func(i, j int) bool {
 		return resp.Transactions[i].BookingDate < resp.Transactions[j].BookingDate
 	})
@@ -147,6 +152,13 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 		}
 
 		tagsJSON := "[]"
+
+		if category == "" {
+			if matched := MatchRule(rules, t.RemittanceInfo(), creditorIBAN); matched != nil {
+				category = matched.Category
+				tagsJSON = matched.Tags
+			}
+		}
 
 		if t.CreditDebitIndicator == "DBIT" {
 			amountCents = -amountCents
@@ -246,6 +258,11 @@ func (s *Service) SyncFromAPI(
 	defer func() { _ = tx.Rollback() }()
 
 	result := &SyncResult{Status: statusSuccess}
+
+	rules, ruleErr := s.listRulesTx(tx)
+	if ruleErr != nil {
+		return nil, nil, fmt.Errorf("loading rules: %w", ruleErr)
+	}
 
 	rows, err := tx.Query("SELECT id, external_id, iban FROM accounts")
 	if err != nil {
@@ -377,6 +394,13 @@ func (s *Service) SyncFromAPI(
 			}
 
 			tagsJSON := "[]"
+
+			if category == "" {
+				if matched := MatchRule(rules, t.RemittanceInfo(), creditorIBAN); matched != nil {
+					category = matched.Category
+					tagsJSON = matched.Tags
+				}
+			}
 
 			if t.CreditDebitIndicator == "DBIT" {
 				amountCents = -amountCents
