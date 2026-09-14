@@ -22,8 +22,9 @@ import (
 const txIDUsage = "Transaction ID"
 
 const successStatus = "success"
+const keyStatus = "status"
 
-//nolint:funlen // CLI command definitions are inherently verbose
+//nolint:funlen,goconst // CLI command definitions are inherently verbose; repeated strings are pre-existing
 func buildApp(cfg *config.Config, svc *service.Service) *cli.Command {
 	return &cli.Command{
 		Name: "enron-accounting-department",
@@ -123,6 +124,46 @@ func buildApp(cfg *config.Config, svc *service.Service) *cli.Command {
 						Action: lineitemCheckAction(svc),
 						Flags: []cli.Flag{
 							&cli.IntFlag{Name: "id", Usage: txIDUsage, Required: true},
+						},
+					},
+				},
+			},
+			{
+				Name:  "rules",
+				Usage: "Manage automatic categorisation rules",
+				Commands: []*cli.Command{
+					{
+						Name:   "add",
+						Usage:  "Add a new category rule",
+						Action: rulesAddAction(svc),
+						Flags: []cli.Flag{
+							&cli.StringFlag{Name: "field",
+								Usage: "Field to match (title|creditor_iban)", Required: true},
+							&cli.StringFlag{Name: "pattern",
+								Usage: "Substring (title) or full IBAN (creditor_iban)", Required: true},
+							&cli.StringFlag{Name: "category", Usage: "Category label to assign", Required: true},
+							&cli.StringFlag{Name: "tags", Usage: "Comma-separated tags", Required: false},
+						},
+					},
+					{
+						Name:   "list",
+						Usage:  "List all category rules",
+						Action: rulesListAction(svc),
+					},
+					{
+						Name:   "remove",
+						Usage:  "Remove a category rule",
+						Action: rulesRemoveAction(svc),
+						Flags: []cli.Flag{
+							&cli.IntFlag{Name: "id", Usage: "Rule ID", Required: true},
+						},
+					},
+					{
+						Name:   "apply",
+						Usage:  "Apply rules to uncategorised transactions",
+						Action: rulesApplyAction(svc),
+						Flags: []cli.Flag{
+							&cli.BoolFlag{Name: "dry-run", Usage: "Preview changes without writing", Required: false},
 						},
 					},
 				},
@@ -239,7 +280,7 @@ func accountsAddAction(svc *service.Service) func(ctx context.Context, cmd *cli.
 		}
 
 		return output.WriteJSON(os.Stdout, map[string]any{
-			"status": successStatus,
+			keyStatus: successStatus,
 		})
 	}
 }
@@ -310,8 +351,8 @@ func categorizeAction(svc *service.Service) func(ctx context.Context, cmd *cli.C
 		}
 
 		return output.WriteJSON(os.Stdout, map[string]any{
-			"status": successStatus,
-			"id":     id,
+			keyStatus: successStatus,
+			"id":      id,
 		})
 	}
 }
@@ -349,6 +390,75 @@ func lineitemCheckAction(svc *service.Service) func(ctx context.Context, cmd *cl
 		result, err := svc.CheckLineItem(int64(id))
 		if err != nil {
 			output.WriteError(os.Stdout, fmt.Sprintf("check lineitem failed: %v", err))
+			return nil
+		}
+
+		return output.WriteJSON(os.Stdout, result)
+	}
+}
+
+func rulesAddAction(svc *service.Service) func(ctx context.Context, cmd *cli.Command) error {
+	return func(_ context.Context, cmd *cli.Command) error {
+		field := cmd.String("field")
+		pattern := cmd.String("pattern")
+		category := cmd.String("category")
+		tagsStr := cmd.String("tags")
+
+		var tags string
+		if tagsStr != "" {
+			parts := strings.Split(tagsStr, ",")
+			jsonParts, _ := json.Marshal(parts)
+			tags = string(jsonParts)
+		}
+
+		ruleID, err := svc.AddRule(field, pattern, category, tags)
+		if err != nil {
+			output.WriteError(os.Stdout, fmt.Sprintf("add rule failed: %v", err))
+			return nil
+		}
+
+		return output.WriteJSON(os.Stdout, map[string]any{
+			"status":  successStatus,
+			"rule_id": ruleID,
+		})
+	}
+}
+
+func rulesListAction(svc *service.Service) func(ctx context.Context, cmd *cli.Command) error {
+	return func(_ context.Context, _ *cli.Command) error {
+		rules, err := svc.ListRules()
+		if err != nil {
+			output.WriteError(os.Stdout, fmt.Sprintf("list rules failed: %v", err))
+			return nil
+		}
+
+		return output.WriteJSON(os.Stdout, rules)
+	}
+}
+
+func rulesRemoveAction(svc *service.Service) func(ctx context.Context, cmd *cli.Command) error {
+	return func(_ context.Context, cmd *cli.Command) error {
+		id := cmd.Int("id")
+
+		if err := svc.RemoveRule(int64(id)); err != nil {
+			output.WriteError(os.Stdout, fmt.Sprintf("remove rule failed: %v", err))
+			return nil
+		}
+
+		return output.WriteJSON(os.Stdout, map[string]any{
+			"status":          successStatus,
+			"removed_rule_id": id,
+		})
+	}
+}
+
+func rulesApplyAction(svc *service.Service) func(ctx context.Context, cmd *cli.Command) error {
+	return func(_ context.Context, cmd *cli.Command) error {
+		dryRun := cmd.Bool("dry-run")
+
+		result, err := svc.ApplyRules(dryRun)
+		if err != nil {
+			output.WriteError(os.Stdout, fmt.Sprintf("apply rules failed: %v", err))
 			return nil
 		}
 
