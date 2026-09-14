@@ -119,6 +119,66 @@ func (s *Service) CompleteAuthSession(
 	return session.SessionID, expiresAt, nil
 }
 
+// RemoveAccountResult is the result of a successful account removal.
+type RemoveAccountResult struct {
+	Status                 string `json:"status"`
+	RemovedAccountID       int64  `json:"removed_account_id"`
+	IBAN                   string `json:"iban"`
+	TransactionsReassigned int    `json:"transactions_reassigned"`
+}
+
+// RemoveAccount deletes an account row identified by accountID or iban.
+// Exactly one of accountID or iban should be non-zero/non-empty.
+// If transactions reference this account, removal is refused unless force is true.
+//
+//nolint:noctx // deliberate: DB.Exec uses background context implicitly
+func (s *Service) RemoveAccount(accountID int64, iban string, force bool) (*RemoveAccountResult, error) {
+	var id int64
+	var ibanOut string
+
+	switch {
+	case accountID > 0:
+		err := s.DB.QueryRow("SELECT id, iban FROM accounts WHERE id = ?", accountID).Scan(&id, &ibanOut)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("account id %d not found", accountID)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("querying account by id: %w", err)
+		}
+	case iban != "":
+		err := s.DB.QueryRow("SELECT id, iban FROM accounts WHERE iban = ?", iban).Scan(&id, &ibanOut)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("account iban %s not found", iban)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("querying account by iban: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("either --id or --iban must be provided")
+	}
+
+	var txCount int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM transactions WHERE account_id = ?", id).Scan(&txCount); err != nil {
+		return nil, fmt.Errorf("counting transactions: %w", err)
+	}
+
+	if txCount > 0 && !force {
+		return nil, fmt.Errorf("account %d (%s) has %d transactions; use --force to remove", id, ibanOut, txCount)
+	}
+
+	_, err := s.DB.Exec("DELETE FROM accounts WHERE id = ?", id)
+	if err != nil {
+		return nil, fmt.Errorf("deleting account: %w", err)
+	}
+
+	return &RemoveAccountResult{
+		Status:                 "success",
+		RemovedAccountID:       id,
+		IBAN:                   ibanOut,
+		TransactionsReassigned: 0,
+	}, nil
+}
+
 // ListBankConnections returns all bank connections.
 //
 //nolint:noctx // deliberate: DB.Query uses background context implicitly

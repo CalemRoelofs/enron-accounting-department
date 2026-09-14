@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1307,6 +1308,117 @@ func TestListBankConnections(t *testing.T) {
 	if connections[1].SessionID != "sess_2" {
 		t.Errorf("expected session_id 'sess_2', got %q", connections[1].SessionID)
 	}
+}
+
+//nolint:paralleltest,gocognit,tparallel // subtests share parent's database; complexity inherent to test
+func TestRemoveAccount(t *testing.T) {
+	t.Parallel()
+	dbase := newTestDB(t)
+	defer dbase.Close()
+	svc := service.NewService(dbase)
+
+	t.Run("success by iban", func(t *testing.T) {
+		id := seedAccount(t, dbase, "Test", "PL92116022020000000575810839")
+		defer func() { _, _ = dbase.Exec("DELETE FROM accounts WHERE id = ?", id) }()
+
+		result, err := svc.RemoveAccount(0, "PL92116022020000000575810839", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Status != "success" {
+			t.Errorf("expected success, got %s", result.Status)
+		}
+		if result.RemovedAccountID != id {
+			t.Errorf("expected removed id %d, got %d", id, result.RemovedAccountID)
+		}
+		if result.IBAN != "PL92116022020000000575810839" {
+			t.Errorf("expected iban %s, got %s", "PL92116022020000000575810839", result.IBAN)
+		}
+		var count int
+		_ = dbase.QueryRow("SELECT COUNT(*) FROM accounts WHERE id = ?", id).Scan(&count)
+		if count != 0 {
+			t.Error("expected account to be deleted")
+		}
+	})
+
+	t.Run("refused when transactions reference account", func(t *testing.T) {
+		id := seedAccount(t, dbase, "Test2", "PL92116022020000000575810840")
+		_, _ = dbase.Exec(
+			"INSERT INTO transactions (bank_transaction_id, account_id, date, amount_cents) VALUES (?, ?, ?, ?)",
+			"R1", id, "2026-01-01", 1000,
+		)
+		_, _ = dbase.Exec(
+			"INSERT INTO transactions (bank_transaction_id, account_id, date, amount_cents) VALUES (?, ?, ?, ?)",
+			"R2", id, "2026-01-02", 2000,
+		)
+		defer func() {
+			_, _ = dbase.Exec("DELETE FROM transactions WHERE account_id = ?", id)
+			_, _ = dbase.Exec("DELETE FROM accounts WHERE id = ?", id)
+		}()
+
+		_, err := svc.RemoveAccount(0, "PL92116022020000000575810840", false)
+		if err == nil {
+			t.Fatal("expected error when transactions reference account")
+		}
+		if !strings.Contains(err.Error(), "2 transactions") {
+			t.Errorf("expected error to mention '2 transactions', got: %v", err)
+		}
+	})
+
+	t.Run("force removal with transactions", func(t *testing.T) {
+		id := seedAccount(t, dbase, "Test3", "PL92116022020000000575810841")
+		_, _ = dbase.Exec(
+			"INSERT INTO transactions (bank_transaction_id, account_id, date, amount_cents) VALUES (?, ?, ?, ?)",
+			"F1", id, "2026-01-01", 1000,
+		)
+		defer func() {
+			_, _ = dbase.Exec("DELETE FROM transactions WHERE account_id = ?", id)
+			_, _ = dbase.Exec("DELETE FROM accounts WHERE id = ?", id)
+		}()
+
+		result, err := svc.RemoveAccount(0, "PL92116022020000000575810841", true)
+		if err != nil {
+			t.Fatalf("unexpected error with force: %v", err)
+		}
+		if result.Status != "success" {
+			t.Errorf("expected success, got %s", result.Status)
+		}
+		var count int
+		_ = dbase.QueryRow("SELECT COUNT(*) FROM accounts WHERE id = ?", id).Scan(&count)
+		if count != 0 {
+			t.Error("expected account to be deleted with force")
+		}
+	})
+
+	t.Run("not found by iban", func(t *testing.T) {
+		_, err := svc.RemoveAccount(0, "PL000000000000000000000000", false)
+		if err == nil {
+			t.Fatal("expected error for non-existent iban")
+		}
+	})
+
+	t.Run("success by id", func(t *testing.T) {
+		id := seedAccount(t, dbase, "Test4", "PL92116022020000000575810842")
+		defer func() { _, _ = dbase.Exec("DELETE FROM accounts WHERE id = ?", id) }()
+
+		result, err := svc.RemoveAccount(id, "", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.Status != "success" {
+			t.Errorf("expected success, got %s", result.Status)
+		}
+		if result.RemovedAccountID != id {
+			t.Errorf("expected removed id %d, got %d", id, result.RemovedAccountID)
+		}
+	})
+
+	t.Run("not found by id", func(t *testing.T) {
+		_, err := svc.RemoveAccount(999, "", false)
+		if err == nil {
+			t.Fatal("expected error for non-existent id")
+		}
+	})
 }
 
 // generateTestKey creates an RSA private key for testing.
