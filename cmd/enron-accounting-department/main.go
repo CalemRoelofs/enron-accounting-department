@@ -102,6 +102,20 @@ func buildApp(cfg *config.Config, svc *service.Service) *cli.Command {
 				},
 			},
 			{
+				Name:   "import-receipts",
+				Usage:  "Import Biedronka e-receipts from a directory",
+				Action: importReceiptsAction(svc),
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "dir",
+						Aliases:  []string{"d"},
+						Usage:    "Directory containing receipt JSON files",
+						Value:    os.ExpandEnv("${HOME}/biedronka"),
+						Required: false,
+					},
+				},
+			},
+			{
 				Name:  "lineitem",
 				Usage: "Manage line items for a transaction",
 				Commands: []*cli.Command{
@@ -390,6 +404,20 @@ func lineitemCheckAction(svc *service.Service) func(ctx context.Context, cmd *cl
 		result, err := svc.CheckLineItem(int64(id))
 		if err != nil {
 			output.WriteError(os.Stdout, fmt.Sprintf("check lineitem failed: %v", err))
+			return nil
+		}
+
+		return output.WriteJSON(os.Stdout, result)
+	}
+}
+
+func importReceiptsAction(svc *service.Service) func(ctx context.Context, cmd *cli.Command) error {
+	return func(_ context.Context, cmd *cli.Command) error {
+		dir := cmd.String("dir")
+
+		result, err := svc.ImportReceipts(dir)
+		if err != nil {
+			output.WriteError(os.Stdout, fmt.Sprintf("import receipts failed: %v", err))
 			return nil
 		}
 

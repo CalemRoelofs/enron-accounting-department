@@ -16,6 +16,10 @@ import (
 // pay_periods rows (duplicates and end dates before start dates).
 const payPeriodNormalizationVersion = 1
 
+// receiptsSchemaVersion is the migration that adds the Biedronka e-receipt
+// tables used for product-level spend analysis.
+const receiptsSchemaVersion = 2
+
 // InitDB opens or creates the database and applies the schema.
 func InitDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
@@ -137,28 +141,94 @@ func createSchema(db *sql.DB) error {
 // applyMigrations runs one-time schema migrations. Each migration is recorded
 // in schema_migrations so it is skipped on subsequent opens.
 func applyMigrations(db *sql.DB) error {
+	payPeriodsDone, err := migrationApplied(db, payPeriodNormalizationVersion)
+	if err != nil {
+		return err
+	}
+	if !payPeriodsDone {
+		if normalizeErr := normalizePayPeriods(db); normalizeErr != nil {
+			return normalizeErr
+		}
+		if recordErr := recordMigration(db, payPeriodNormalizationVersion); recordErr != nil {
+			return recordErr
+		}
+	}
+
+	receiptsDone, err := migrationApplied(db, receiptsSchemaVersion)
+	if err != nil {
+		return err
+	}
+	if !receiptsDone {
+		if schemaErr := createReceiptsSchema(db); schemaErr != nil {
+			return schemaErr
+		}
+		if recordErr := recordMigration(db, receiptsSchemaVersion); recordErr != nil {
+			return recordErr
+		}
+	}
+
+	return nil
+}
+
+// migrationApplied reports whether the given schema version has already run.
+func migrationApplied(db *sql.DB, version int) (bool, error) {
 	var applied int
 	if err := db.QueryRow(
 		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
-		payPeriodNormalizationVersion,
+		version,
 	).Scan(&applied); err != nil {
-		return fmt.Errorf("checking schema version: %w", err)
+		return false, fmt.Errorf("checking schema version: %w", err)
 	}
-	if applied > 0 {
-		return nil
-	}
+	return applied > 0, nil
+}
 
-	if err := normalizePayPeriods(db); err != nil {
-		return err
-	}
-
+// recordMigration marks a schema version as applied.
+func recordMigration(db *sql.DB, version int) error {
 	if _, err := db.Exec(
 		"INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
-		payPeriodNormalizationVersion,
+		version,
 	); err != nil {
 		return fmt.Errorf("recording schema version: %w", err)
 	}
+	return nil
+}
 
+// createReceiptsSchema adds the tables that hold imported Biedronka
+// e-receipts and their product line items.
+func createReceiptsSchema(db *sql.DB) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS receipts (
+		id INTEGER PRIMARY KEY,
+		store_id TEXT NOT NULL,
+		nr_dok INTEGER NOT NULL,
+		nr_fabr TEXT,
+		purchased_at TEXT NOT NULL,
+		total_cents INTEGER NOT NULL,
+		paid_cents INTEGER NOT NULL,
+		discount_cents INTEGER NOT NULL DEFAULT 0,
+		deposit_cents INTEGER NOT NULL DEFAULT 0,
+		payment_form TEXT,
+		item_count INTEGER NOT NULL DEFAULT 0,
+		source_file TEXT,
+		transaction_id INTEGER REFERENCES transactions(id),
+		UNIQUE(store_id, nr_dok)
+	);
+
+	CREATE TABLE IF NOT EXISTS receipt_items (
+		id INTEGER PRIMARY KEY,
+		receipt_id INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		quantity TEXT,
+		unit_price_cents INTEGER,
+		brutto_cents INTEGER NOT NULL,
+		vat_class TEXT,
+		discount_cents INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(receipt_id, name, quantity, brutto_cents)
+	);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("creating receipts schema: %w", err)
+	}
 	return nil
 }
 

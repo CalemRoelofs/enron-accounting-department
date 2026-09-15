@@ -134,6 +134,49 @@ func TestInitDB_CreatesCategoryRules(t *testing.T) {
 	}
 }
 
+func TestInitDB_CreatesReceiptTables(t *testing.T) {
+	t.Parallel()
+	dbase, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer dbase.Close()
+
+	for _, table := range []string{"receipts", "receipt_items"} {
+		var count int
+		if err := dbase.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+			table,
+		).Scan(&count); err != nil {
+			t.Fatalf("checking table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Errorf("table %s not found", table)
+		}
+	}
+
+	// (store_id, nr_dok) must be unique so re-imports are idempotent.
+	if _, err := dbase.Exec(
+		`INSERT INTO receipts (store_id, nr_dok, purchased_at, total_cents, paid_cents)
+		 VALUES ('STORE-1', 7, '2026-08-28T10:30:45Z', 100, 100)`,
+	); err != nil {
+		t.Fatalf("inserting first receipt: %v", err)
+	}
+	if _, err := dbase.Exec(
+		`INSERT OR IGNORE INTO receipts (store_id, nr_dok, purchased_at, total_cents, paid_cents)
+		 VALUES ('STORE-1', 7, '2026-08-28T10:30:45Z', 100, 100)`,
+	); err != nil {
+		t.Fatalf("inserting duplicate receipt: %v", err)
+	}
+	var receipts int
+	if err := dbase.QueryRow("SELECT COUNT(*) FROM receipts").Scan(&receipts); err != nil {
+		t.Fatalf("counting receipts: %v", err)
+	}
+	if receipts != 1 {
+		t.Errorf("expected 1 receipt after duplicate insert, got %d", receipts)
+	}
+}
+
 func TestInitDB_WALMode(t *testing.T) {
 	t.Parallel()
 	dbase, err := db.InitDB(":memory:")
