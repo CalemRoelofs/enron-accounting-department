@@ -1,0 +1,14 @@
+[
+  {
+    "source": "amazon",
+    "order_ref": "MIN-0001",
+    "order_date": "2026-09-11",
+    "paid_cents": 999,
+    "items": [
+      {
+        "name": "Cable",
+        "gross_cents": 999
+      }
+    ]
+  }
+]

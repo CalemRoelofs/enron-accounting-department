@@ -1,0 +1,58 @@
+[
+  {
+    "source": "allegro",
+    "order_ref": "ORDER-A-0001",
+    "order_date": "2026-09-09T12:10",
+    "paid_cents": 5473,
+    "currency": "PLN",
+    "seller": "seller-one",
+    "payment_method": "Google Pay",
+    "delivery_cents": 0,
+    "bank_transaction_id": 6772,
+    "items": [
+      {
+        "name": "Wet wipes",
+        "code": "18818737885",
+        "quantity": "1",
+        "unit_cents": 4415,
+        "gross_cents": 4415
+      },
+      {
+        "name": "Soap",
+        "code": "18818737886",
+        "quantity": "2",
+        "unit_cents": 529,
+        "gross_cents": 1058
+      }
+    ],
+    "refunds": [
+      {
+        "refund_ref": "REFUND-A-0001",
+        "amount_cents": 1900,
+        "refund_date": "2026-09-17",
+        "partial": 1
+      }
+    ]
+  },
+  {
+    "source": "allegro",
+    "order_ref": "ORDER-A-0002",
+    "order_date": "2026-09-10T08:00",
+    "paid_cents": 1200,
+    "currency": "PLN",
+    "seller": null,
+    "payment_method": null,
+    "delivery_cents": 1200,
+    "bank_transaction_id": null,
+    "items": [
+      {
+        "name": "Battery",
+        "code": null,
+        "quantity": null,
+        "unit_cents": null,
+        "gross_cents": 1200
+      }
+    ],
+    "refunds": []
+  }
+]

@@ -177,6 +177,49 @@ func TestInitDB_CreatesReceiptTables(t *testing.T) {
 	}
 }
 
+func TestInitDB_CreatesOrdersTables(t *testing.T) {
+	t.Parallel()
+	dbase, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer dbase.Close()
+
+	for _, table := range []string{"orders", "order_items", "refunds"} {
+		var count int
+		if err := dbase.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+			table,
+		).Scan(&count); err != nil {
+			t.Fatalf("checking table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Errorf("table %s not found", table)
+		}
+	}
+
+	// (source, order_ref) must be unique so re-imports are idempotent.
+	if _, err := dbase.Exec(
+		`INSERT INTO orders (source, order_ref, order_date, paid_cents)
+		 VALUES ('allegro', 'ORDER-1', '2026-09-09T12:10', 100)`,
+	); err != nil {
+		t.Fatalf("inserting first order: %v", err)
+	}
+	if _, err := dbase.Exec(
+		`INSERT OR IGNORE INTO orders (source, order_ref, order_date, paid_cents)
+		 VALUES ('allegro', 'ORDER-1', '2026-09-09T12:10', 100)`,
+	); err != nil {
+		t.Fatalf("inserting duplicate order: %v", err)
+	}
+	var orders int
+	if err := dbase.QueryRow("SELECT COUNT(*) FROM orders").Scan(&orders); err != nil {
+		t.Fatalf("counting orders: %v", err)
+	}
+	if orders != 1 {
+		t.Errorf("expected 1 order after duplicate insert, got %d", orders)
+	}
+}
+
 func TestInitDB_WALMode(t *testing.T) {
 	t.Parallel()
 	dbase, err := db.InitDB(":memory:")

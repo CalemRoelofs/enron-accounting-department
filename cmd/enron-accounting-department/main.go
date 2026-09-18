@@ -116,6 +116,20 @@ func buildApp(cfg *config.Config, svc *service.Service) *cli.Command {
 				},
 			},
 			{
+				Name:   "import-orders",
+				Usage:  "Import online orders from a directory",
+				Action: importOrdersAction(svc),
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "dir",
+						Aliases:  []string{"d"},
+						Usage:    "Directory containing order JSON files",
+						Value:    os.ExpandEnv("${HOME}/orders"),
+						Required: false,
+					},
+				},
+			},
+			{
 				Name:  "lineitem",
 				Usage: "Manage line items for a transaction",
 				Commands: []*cli.Command{
@@ -418,6 +432,20 @@ func importReceiptsAction(svc *service.Service) func(ctx context.Context, cmd *c
 		result, err := svc.ImportReceipts(dir)
 		if err != nil {
 			output.WriteError(os.Stdout, fmt.Sprintf("import receipts failed: %v", err))
+			return nil
+		}
+
+		return output.WriteJSON(os.Stdout, result)
+	}
+}
+
+func importOrdersAction(svc *service.Service) func(ctx context.Context, cmd *cli.Command) error {
+	return func(_ context.Context, cmd *cli.Command) error {
+		dir := cmd.String("dir")
+
+		result, err := svc.ImportOrders(dir)
+		if err != nil {
+			output.WriteError(os.Stdout, fmt.Sprintf("import orders failed: %v", err))
 			return nil
 		}
 

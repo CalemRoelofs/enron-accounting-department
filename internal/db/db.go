@@ -20,6 +20,10 @@ const payPeriodNormalizationVersion = 1
 // tables used for product-level spend analysis.
 const receiptsSchemaVersion = 2
 
+// ordersSchemaVersion is the migration that adds the online-order tables used
+// for order-level spend analysis.
+const ordersSchemaVersion = 3
+
 // InitDB opens or creates the database and applies the schema.
 func InitDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
@@ -167,6 +171,19 @@ func applyMigrations(db *sql.DB) error {
 		}
 	}
 
+	ordersDone, err := migrationApplied(db, ordersSchemaVersion)
+	if err != nil {
+		return err
+	}
+	if !ordersDone {
+		if schemaErr := createOrdersSchema(db); schemaErr != nil {
+			return schemaErr
+		}
+		if recordErr := recordMigration(db, ordersSchemaVersion); recordErr != nil {
+			return recordErr
+		}
+	}
+
 	return nil
 }
 
@@ -228,6 +245,52 @@ func createReceiptsSchema(db *sql.DB) error {
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("creating receipts schema: %w", err)
+	}
+	return nil
+}
+
+// createOrdersSchema adds the tables that hold imported online orders, their
+// line items and any refunds issued against them.
+func createOrdersSchema(db *sql.DB) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS orders (
+		id INTEGER PRIMARY KEY,
+		source TEXT NOT NULL,
+		order_ref TEXT NOT NULL,
+		order_date TEXT NOT NULL,
+		paid_cents INTEGER NOT NULL,
+		refunded_cents INTEGER NOT NULL DEFAULT 0,
+		currency TEXT NOT NULL DEFAULT 'PLN',
+		seller TEXT,
+		payment_method TEXT,
+		delivery_cents INTEGER NOT NULL DEFAULT 0,
+		transaction_id INTEGER REFERENCES transactions(id),
+		UNIQUE(source, order_ref)
+	);
+
+	CREATE TABLE IF NOT EXISTS order_items (
+		id INTEGER PRIMARY KEY,
+		order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		code TEXT,
+		quantity TEXT,
+		unit_price_cents INTEGER,
+		gross_cents INTEGER NOT NULL,
+		UNIQUE(order_id, name, quantity, gross_cents)
+	);
+
+	CREATE TABLE IF NOT EXISTS refunds (
+		id INTEGER PRIMARY KEY,
+		order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+		refund_ref TEXT,
+		amount_cents INTEGER NOT NULL,
+		refund_date TEXT,
+		partial INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(refund_ref)
+	);
+	`
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("creating orders schema: %w", err)
 	}
 	return nil
 }
