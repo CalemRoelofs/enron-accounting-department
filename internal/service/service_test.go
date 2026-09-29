@@ -1261,29 +1261,28 @@ func TestParseAmountCents(t *testing.T) {
 	}
 }
 
-func TestListaPlacRegex(t *testing.T) {
+func TestIsListaPlac(t *testing.T) {
 	t.Parallel()
-	matching := []string{
-		"Lista Plac 08/2026",
-		"lista plac 01/2025",
-		"LISTA PLAC 12/2024",
-		"Some prefix Lista Plac 06/2023 suffix",
-	}
-	nonMatching := []string{
-		"Top up",
-		"Trade Republic Deposit",
-		"Lista Plac 08/26",
-		"Lista 08/2026",
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"Lista Plac 09/2026", true},
+		{"Lista plac 09 2026", true},
+		{"Lista Plac 09.2026", true},
+		{"Lista Plac 09-2026", true},
+		{"LISTA PLAC 2026/09", true},
+		{"Some prefix Lista Plac 06/2023 suffix", true},
+		{"Lista Plac", false},
+		{"Lista Plac 09/26", false},
+		{"Lista platnosci 09 2026", false},
+		{"Wynagrodzenie 09 2026", false},
+		{"", false},
 	}
 
-	for _, s := range matching {
-		if !service.ListaPlacRe.MatchString(s) {
-			t.Errorf("expected match for %q", s)
-		}
-	}
-	for _, s := range nonMatching {
-		if service.ListaPlacRe.MatchString(s) {
-			t.Errorf("expected no match for %q", s)
+	for _, tt := range tests {
+		if got := service.IsListaPlac(tt.title); got != tt.want {
+			t.Errorf("IsListaPlac(%q) = %v, want %v", tt.title, got, tt.want)
 		}
 	}
 }

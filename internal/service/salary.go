@@ -9,8 +9,22 @@ import (
 
 const hoursPerDay = 24
 
-// ListaPlacRe matches "Lista Plac" salary transfer titles.
-var ListaPlacRe = regexp.MustCompile(`(?i)Lista Plac \d{2}/\d{4}`)
+// The employer has changed separators, casing and field order over time, so
+// month-first and year-first forms are matched separately.
+
+// listaPlacMonthFirstRe matches month-first, four-digit year titles such as
+// "Lista Plac 09/2026", "09 2026", "09.2026", "09-2026".
+var listaPlacMonthFirstRe = regexp.MustCompile(`(?i)\blista\s+plac\s+\d{2}[/.\- ]\d{4}\b`)
+
+// listaPlacYearFirstRe matches year-first, two-digit month titles such as
+// "LISTA PLAC 2026/09".
+var listaPlacYearFirstRe = regexp.MustCompile(`(?i)\blista\s+plac\s+\d{4}[/.\- ]\d{2}\b`)
+
+// IsListaPlac reports whether the transfer title identifies a "Lista Plac"
+// (monthly salary) payment.
+func IsListaPlac(title string) bool {
+	return listaPlacMonthFirstRe.MatchString(title) || listaPlacYearFirstRe.MatchString(title)
+}
 
 // DetectSalary checks if a transfer is a salary payment.
 func DetectSalary(amountValue float64, debtorIBAN, _ /* transferTitle */, employerIBAN string) bool {

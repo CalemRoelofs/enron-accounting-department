@@ -129,7 +129,7 @@ func (s *Service) SyncFromFixture(cfg *config.Config, fixtureData []byte) (*Sync
 			t.RemittanceInfo(),
 			cfg.EmployerIBAN,
 		)
-		if isSalary && !isTransfer && ListaPlacRe.MatchString(t.RemittanceInfo()) {
+		if isSalary && !isTransfer && IsListaPlac(t.RemittanceInfo()) {
 			category = categorySalary
 		}
 
@@ -369,7 +369,7 @@ func (s *Service) SyncFromAPI(
 				t.RemittanceInfo(),
 				cfg.EmployerIBAN,
 			)
-			if isSalary && !isTransfer && ListaPlacRe.MatchString(t.RemittanceInfo()) {
+			if isSalary && !isTransfer && IsListaPlac(t.RemittanceInfo()) {
 				category = categorySalary
 			}
 
